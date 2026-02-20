@@ -1,0 +1,527 @@
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { Clock, Check, ChefHat, AlertCircle, Flame, Play, Undo2, Filter, Search, CheckCircle2, Volume2, VolumeX } from 'lucide-react';
+import { PageHeader } from '@/components/common/PageComponents';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { cn } from '@/lib/utils';
+import {
+  getOrdersSnapshot,
+  markOrderItemPrepared,
+  markOrderReady,
+  markOrderServed,
+  subscribeOrders,
+} from '@/lib/orderStore';
+import {
+  clearKitchenForOrder,
+  ensureKitchenItemsFromOrders,
+  getKitchenSnapshot,
+  subscribeKitchen,
+  upsertKitchenItemStatus,
+  type KitchenItemStatus,
+} from '@/lib/kitchenStore';
+
+export default function KitchenDisplay() {
+  const prefersReducedMotion = useReducedMotion();
+
+  const orders = useSyncExternalStore(subscribeOrders, getOrdersSnapshot, getOrdersSnapshot);
+  const kitchen = useSyncExternalStore(subscribeKitchen, getKitchenSnapshot, getKitchenSnapshot);
+
+  const [now, setNow] = useState(() => Date.now());
+  const [query, setQuery] = useState('');
+  const [soundEnabled, setSoundEnabled] = useState(() => {
+    try {
+      return localStorage.getItem('mthunzi.kds.sound.v1') !== '0';
+    } catch {
+      return true;
+    }
+  });
+
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const initializedOrdersRef = useRef(false);
+  const prevTicketIdsRef = useRef<Set<string>>(new Set());
+  const initializedUrgentRef = useRef(false);
+  const prevUrgentIdsRef = useRef<Set<string>>(new Set());
+
+  function ensureAudioContext() {
+    if (typeof window === 'undefined') return null;
+    const AnyWindow = window as any;
+    const Ctx = window.AudioContext ?? AnyWindow.webkitAudioContext;
+    if (!Ctx) return null;
+    if (!audioCtxRef.current) audioCtxRef.current = new Ctx();
+    const ctx = audioCtxRef.current;
+    // Browsers require a user gesture to start audio; toggling sound counts.
+    if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => undefined);
+    }
+    return ctx;
+  }
+
+  function playBeep(pattern: 'new' | 'urgent' = 'new') {
+    const ctx = ensureAudioContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const base = pattern === 'urgent' ? 980 : 880;
+    const count = pattern === 'urgent' ? 2 : 1;
+
+    for (let i = 0; i < count; i++) {
+      const start = now + i * 0.18;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(base, start);
+
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.12, start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.14);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(start);
+      osc.stop(start + 0.16);
+    }
+  }
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('mthunzi.kds.sound.v1', soundEnabled ? '1' : '0');
+    } catch {
+      // ignore
+    }
+  }, [soundEnabled]);
+
+  useEffect(() => {
+    // Live timers (elapsed minutes)
+    const t = window.setInterval(() => setNow(Date.now()), 10_000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    // Ensure newly-sent items have a persisted kitchen status
+    ensureKitchenItemsFromOrders(orders);
+  }, [orders]);
+
+  const kitchenKey = useMemo(() => {
+    const m = new Map<string, KitchenItemStatus>();
+    for (const it of kitchen.items) m.set(`${it.orderId}:${it.itemId}`, it.status);
+    return m;
+  }, [kitchen.items]);
+
+  function getItemStatus(orderId: string, itemId: string, preparedAt?: string): KitchenItemStatus {
+    if (preparedAt) return 'ready';
+    return kitchenKey.get(`${orderId}:${itemId}`) ?? 'pending';
+  }
+
+  function getElapsedMinutes(order: (typeof orders)[number]) {
+    const base = order.sentAt ?? order.createdAt;
+    const ms = now - new Date(base).getTime();
+    return Math.max(0, Math.floor(ms / 60000));
+  }
+
+  function setItem(orderId: string, itemId: string, status: KitchenItemStatus, preparedAt?: string) {
+    upsertKitchenItemStatus({ orderId, itemId, status });
+    // Persist "ready" state into the real order so it survives device changes.
+    if (status === 'ready') markOrderItemPrepared({ orderId, itemId, prepared: true });
+    // If we revert from ready, we remove preparedAt.
+    if (status !== 'ready' && preparedAt) markOrderItemPrepared({ orderId, itemId, prepared: false });
+  }
+
+  function isTicketComplete(order: (typeof orders)[number]) {
+    const kitchenItems = order.items.filter((i) => i.sentToKitchen && !i.isVoided);
+    if (!kitchenItems.length) return true;
+    return kitchenItems.every((it) => getItemStatus(order.id, it.id, it.preparedAt) === 'ready');
+  }
+
+  const activeOrders = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return orders
+      .filter((o) => o.status === 'sent' || o.status === 'ready')
+      .filter((o) => o.items.some((i) => i.sentToKitchen && !i.isVoided))
+      .filter((o) => {
+        if (!q) return true;
+        const hay = `${o.orderNo} ${o.tableNo ?? ''} ${o.staffName} ${o.orderType}`.toLowerCase();
+        return hay.includes(q);
+      })
+      .sort((a, b) => new Date(a.sentAt ?? a.createdAt).getTime() - new Date(b.sentAt ?? b.createdAt).getTime());
+  }, [orders, query]);
+
+  useEffect(() => {
+    // Sound notification for new kitchen tickets (only once per ticket).
+    const currentTicketIds = new Set(activeOrders.filter((o) => o.status === 'sent').map((o) => o.id));
+
+    if (!initializedOrdersRef.current) {
+      initializedOrdersRef.current = true;
+      prevTicketIdsRef.current = currentTicketIds;
+      return;
+    }
+
+    if (soundEnabled) {
+      let hasNew = false;
+      for (const id of currentTicketIds) {
+        if (!prevTicketIdsRef.current.has(id)) {
+          hasNew = true;
+          break;
+        }
+      }
+      if (hasNew) playBeep('new');
+    }
+
+    prevTicketIdsRef.current = currentTicketIds;
+  }, [activeOrders, soundEnabled]);
+
+  useEffect(() => {
+    // Urgent alert (15+ minutes) once per ticket.
+    const urgentIds = new Set(
+      activeOrders
+        .filter((o) => o.status === 'sent')
+        .filter((o) => getElapsedMinutes(o) >= 15)
+        .map((o) => o.id)
+    );
+
+    if (!initializedUrgentRef.current) {
+      initializedUrgentRef.current = true;
+      prevUrgentIdsRef.current = urgentIds;
+      return;
+    }
+
+    if (soundEnabled) {
+      let newUrgent = false;
+      for (const id of urgentIds) {
+        if (!prevUrgentIdsRef.current.has(id)) {
+          newUrgent = true;
+          break;
+        }
+      }
+      if (newUrgent) playBeep('urgent');
+    }
+
+    prevUrgentIdsRef.current = urgentIds;
+  }, [activeOrders, now, soundEnabled]);
+
+  const pendingTickets = useMemo(
+    () => activeOrders.filter((o) => o.status === 'sent' && !isTicketComplete(o)),
+    [activeOrders]
+  );
+  const inProgressTickets = useMemo(
+    () => activeOrders.filter((o) => o.status === 'sent' && isTicketComplete(o) === false && o.items.some((it) => getItemStatus(o.id, it.id, it.preparedAt) === 'preparing')),
+    [activeOrders, kitchenKey]
+  );
+  const readyTickets = useMemo(
+    () => activeOrders.filter((o) => o.status === 'ready' || (o.status === 'sent' && isTicketComplete(o))),
+    [activeOrders]
+  );
+
+  const urgentCount = useMemo(
+    () => activeOrders.filter((o) => getElapsedMinutes(o) >= 15).length,
+    [activeOrders, now]
+  );
+
+  const motionProps = prefersReducedMotion
+    ? { initial: false as const, animate: { opacity: 1 }, exit: { opacity: 0 } }
+    : { initial: { opacity: 0, y: 10 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: -10 } };
+
+  function TicketCard({ order }: { order: (typeof orders)[number] }) {
+    const elapsed = getElapsedMinutes(order);
+    const urgent = elapsed >= 15;
+    const complete = isTicketComplete(order);
+    const kitchenItems = order.items.filter((i) => i.sentToKitchen && !i.isVoided);
+
+    return (
+      <motion.div layout {...motionProps} transition={{ duration: 0.18 }}>
+        <Card
+          className={cn(
+            'border-2 overflow-hidden',
+            urgent ? 'border-orange-500/70' : 'border-border',
+            complete && order.status !== 'ready' ? 'border-emerald-500/70 bg-emerald-50/60 dark:bg-emerald-950/20' : ''
+          )}
+        >
+          <CardHeader className="pb-2">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <CardTitle className="text-base flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold">#{order.orderNo}</span>
+                  {order.tableNo != null && <Badge variant="outline">Table {order.tableNo}</Badge>}
+                  <Badge variant={order.orderType === 'eat_in' ? 'default' : 'secondary'}>
+                    {order.orderType.replace('_', ' ')}
+                  </Badge>
+                  {urgent && (
+                    <Badge className="bg-orange-600 hover:bg-orange-600 text-white">
+                      <Flame className="h-3.5 w-3.5 mr-1" /> URGENT
+                    </Badge>
+                  )}
+                </CardTitle>
+                <div className="text-xs text-muted-foreground mt-1">
+                  {order.staffName}
+                </div>
+              </div>
+
+              <div className={cn('flex items-center gap-1 text-sm font-medium shrink-0', urgent ? 'text-orange-600' : 'text-muted-foreground')}>
+                {urgent && <AlertCircle className="h-4 w-4" />}
+                <Clock className="h-4 w-4" />
+                {elapsed}m
+              </div>
+            </div>
+          </CardHeader>
+
+          <CardContent className="pt-0">
+            <div className="space-y-2">
+              {kitchenItems.map((it) => {
+                const status = getItemStatus(order.id, it.id, it.preparedAt);
+                const isReady = status === 'ready';
+                const isPreparing = status === 'preparing';
+
+                return (
+                  <div
+                    key={it.id}
+                    className={cn(
+                      'rounded-lg border p-3 transition-colors',
+                      isReady ? 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-500/30' : 'bg-background'
+                    )}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className={cn('font-medium leading-tight', isReady && 'text-muted-foreground line-through')}>
+                          {it.menuItemName}
+                        </div>
+                        {(it.notes || (it.modifiers?.length ?? 0) > 0) && (
+                          <div className="mt-1 text-xs text-orange-600">
+                            {it.notes ? `Note: ${it.notes}` : null}
+                            {!it.notes && it.modifiers?.length ? `Mods: ${it.modifiers.join(', ')}` : null}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <div className="text-lg font-semibold">×{it.quantity}</div>
+                        <Badge
+                          variant={isReady ? 'default' : isPreparing ? 'secondary' : 'outline'}
+                          className={cn(isReady && 'bg-emerald-600 hover:bg-emerald-600 text-white')}
+                        >
+                          {isReady ? 'Ready' : isPreparing ? 'In Prep' : 'Pending'}
+                        </Badge>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex gap-2">
+                      <Button
+                        size="sm"
+                        variant={isPreparing ? 'default' : 'outline'}
+                        className="gap-2"
+                        onClick={() => setItem(order.id, it.id, 'preparing', it.preparedAt)}
+                        disabled={isReady}
+                      >
+                        <Play className="h-4 w-4" /> Start
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={isReady ? 'default' : 'outline'}
+                        className={cn('gap-2', isReady && 'bg-emerald-600 hover:bg-emerald-600 text-white')}
+                        onClick={() => setItem(order.id, it.id, 'ready', it.preparedAt)}
+                      >
+                        <Check className="h-4 w-4" /> Done
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="gap-2"
+                        onClick={() => setItem(order.id, it.id, 'pending', it.preparedAt)}
+                      >
+                        <Undo2 className="h-4 w-4" /> Undo
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              {order.status !== 'ready' ? (
+                <Button
+                  className="flex-1 gap-2"
+                  onClick={() => {
+                    if (!isTicketComplete(order)) return;
+                    markOrderReady(order.id);
+                  }}
+                  disabled={!complete}
+                >
+                  <CheckCircle2 className="h-4 w-4" /> Mark Ticket Ready
+                </Button>
+              ) : (
+                <Button
+                  className="flex-1 gap-2"
+                  variant="default"
+                  onClick={() => {
+                    markOrderServed(order.id);
+                    clearKitchenForOrder(order.id);
+                  }}
+                >
+                  <Check className="h-4 w-4" /> Clear (Served)
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+    );
+  }
+  
+  return (
+    <div className="p-4">
+      <PageHeader
+        title="Kitchen Display"
+        description="Live kitchen screen (orders from POS)"
+      />
+
+      <div className="flex flex-col md:flex-row md:items-center gap-3 mb-4">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Filter className="h-4 w-4" />
+          <span>{activeOrders.length} active</span>
+          <span className="text-muted-foreground/50">•</span>
+          <span className={cn(urgentCount ? 'text-orange-600 font-medium' : '')}>{urgentCount} urgent</span>
+        </div>
+        <div className="md:ml-auto flex items-center gap-2 w-full md:w-[420px]">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            title={soundEnabled ? 'Sound on' : 'Sound off'}
+            onClick={() => {
+              setSoundEnabled((v) => {
+                const next = !v;
+                if (next) {
+                  // user gesture -> unlock audio
+                  playBeep('new');
+                }
+                return next;
+              });
+            }}
+          >
+            {soundEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+          </Button>
+          <Search className="h-4 w-4 text-muted-foreground" />
+          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search order #, table, staff..." />
+        </div>
+      </div>
+
+      <Tabs defaultValue="board" className="space-y-3">
+        <TabsList>
+          <TabsTrigger value="board">Board</TabsTrigger>
+          <TabsTrigger value="ready">Ready</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="board" className="space-y-3">
+          {activeOrders.length === 0 ? (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <ChefHat className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+                <p className="text-muted-foreground">No kitchen orders yet.</p>
+                <p className="text-xs text-muted-foreground mt-2">Orders appear here after they are sent to kitchen.</p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <Card className="overflow-hidden">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Pending</CardTitle>
+                  <div className="text-xs text-muted-foreground">New tickets & pending items</div>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <ScrollArea className="h-[70vh] pr-2">
+                    <div className="space-y-3">
+                      <AnimatePresence initial={false}>
+                        {pendingTickets.map((order) => (
+                          <TicketCard key={order.id} order={order} />
+                        ))}
+                      </AnimatePresence>
+                      {!pendingTickets.length && (
+                        <div className="text-sm text-muted-foreground py-6 text-center">No pending tickets.</div>
+                      )}
+                    </div>
+                  </ScrollArea>
+                </CardContent>
+              </Card>
+
+              <Card className="overflow-hidden">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">In Progress</CardTitle>
+                  <div className="text-xs text-muted-foreground">Items currently being prepared</div>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <ScrollArea className="h-[70vh] pr-2">
+                    <div className="space-y-3">
+                      <AnimatePresence initial={false}>
+                        {activeOrders
+                          .filter((o) => o.status === 'sent')
+                          .filter((o) => o.items.some((it) => getItemStatus(o.id, it.id, it.preparedAt) === 'preparing'))
+                          .map((order) => (
+                            <TicketCard key={order.id} order={order} />
+                          ))}
+                      </AnimatePresence>
+                      {!inProgressTickets.length && (
+                        <div className="text-sm text-muted-foreground py-6 text-center">No tickets in progress.</div>
+                      )}
+                    </div>
+                  </ScrollArea>
+                </CardContent>
+              </Card>
+
+              <Card className="overflow-hidden">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Ready To Pass</CardTitle>
+                  <div className="text-xs text-muted-foreground">Complete tickets waiting for handoff</div>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <ScrollArea className="h-[70vh] pr-2">
+                    <div className="space-y-3">
+                      <AnimatePresence initial={false}>
+                        {readyTickets
+                          .filter((o) => o.status !== 'ready')
+                          .map((order) => (
+                            <TicketCard key={order.id} order={order} />
+                          ))}
+                      </AnimatePresence>
+                      {!readyTickets.filter((o) => o.status !== 'ready').length && (
+                        <div className="text-sm text-muted-foreground py-6 text-center">Nothing ready yet.</div>
+                      )}
+                    </div>
+                  </ScrollArea>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="ready" className="space-y-3">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Ready Tickets</CardTitle>
+              <div className="text-xs text-muted-foreground">Marked ready (can be cleared when served)</div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <AnimatePresence initial={false}>
+                  {readyTickets
+                    .filter((o) => o.status === 'ready')
+                    .map((order) => (
+                      <TicketCard key={order.id} order={order} />
+                    ))}
+                </AnimatePresence>
+                {!readyTickets.filter((o) => o.status === 'ready').length && (
+                  <div className="col-span-full text-sm text-muted-foreground py-10 text-center">No ready tickets.</div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+      
+    </div>
+  );
+}

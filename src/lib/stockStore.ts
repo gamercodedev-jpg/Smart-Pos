@@ -1,0 +1,506 @@
+import type { StockItem } from '@/types';
+import { stockItems as seededStockItems } from '@/data/mockData';
+import type { BatchProduction, Recipe } from '@/types';
+import { getPosMenuItems, upsertPosMenuItem } from '@/lib/posMenuStore';
+import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient';
+
+const STORAGE_KEY = 'mthunzi.stockItems.v1';
+
+type Listener = () => void;
+
+let listeners: Listener[] = [];
+let state: StockItem[] | null = null;
+let initialized = false;
+
+function emit() {
+  for (const l of listeners) l();
+}
+
+function persist(next: StockItem[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // ignore
+  }
+}
+
+function load(): StockItem[] {
+  if (state) return state;
+
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as StockItem[];
+      if (Array.isArray(parsed)) {
+        state = parsed;
+        return state;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  state = seededStockItems.map(s => ({ ...s }));
+  persist(state);
+  return state;
+}
+
+function round2(n: number) {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+async function fetchFromDb() {
+  if (!isSupabaseConfigured() || !supabase) return;
+  try {
+    const { data, error } = await supabase.from('stock_items').select('*');
+    if (error) {
+      console.warn('Failed to fetch stock_items from Supabase', error);
+      return;
+    }
+    if (!data) return;
+    // map to StockItem types and coerce numbers
+    const items: StockItem[] = data.map((r: any) => ({
+      id: r.id,
+      code: String(r.item_code ?? r.code ?? r.itemCode ?? ''),
+      name: String(r.name ?? ''),
+      departmentId: r.department_id ?? r.departmentId ?? null,
+      unitType: r.unit ?? r.unit_type ?? r.unitType ?? 'EACH',
+      lowestCost: typeof r.lowest_cost === 'number' ? r.lowest_cost : (typeof r.lowestCost === 'number' ? r.lowestCost : parseFloat(r.lowest_cost ?? r.lowestCost ?? 0) || 0),
+      highestCost: typeof r.highest_cost === 'number' ? r.highest_cost : (typeof r.highestCost === 'number' ? r.highestCost : parseFloat(r.highest_cost ?? r.highestCost ?? 0) || 0),
+      currentCost: typeof r.current_cost === 'number' ? r.current_cost : (typeof r.cost_per_unit === 'number' ? r.cost_per_unit : parseFloat(r.current_cost ?? r.cost_per_unit ?? 0) || 0),
+      currentStock: typeof r.current_stock === 'number' ? r.current_stock : parseFloat(r.current_stock ?? r.stock_quantity ?? 0) || 0,
+      reorderLevel: r.reorder_level !== undefined ? (typeof r.reorder_level === 'number' ? r.reorder_level : parseFloat(r.reorder_level)) : (r.min_stock_level !== undefined ? (typeof r.min_stock_level === 'number' ? r.min_stock_level : parseFloat(r.min_stock_level)) : undefined),
+      supplierId: r.supplier_id ?? r.supplierId ?? undefined,
+    }));
+
+    state = items;
+    persist(state);
+    emit();
+  } catch (err) {
+    console.warn('Error fetching inventory items', err);
+  }
+}
+
+export function subscribeStockItems(listener: Listener) {
+  listeners = [...listeners, listener];
+
+  // lazy init from Supabase on first subscriber
+  if (!initialized) {
+    initialized = true;
+    if (isSupabaseConfigured() && supabase) {
+      // fetch once and populate
+      void fetchFromDb();
+    }
+  }
+
+  return () => {
+    listeners = listeners.filter(l => l !== listener);
+  };
+}
+
+export function getStockItemsSnapshot(): StockItem[] {
+  return load();
+}
+
+export function getStockItemById(itemId: string): StockItem | undefined {
+  return load().find(s => s.id === itemId);
+}
+
+export async function addStockItem(item: StockItem) {
+  // Try supabase insert
+  if (isSupabaseConfigured() && supabase) {
+    // Only include columns known to exist in the `stock_items` table per migration
+    const payload = {
+      id: item.id,
+      item_code: item.code,
+      name: item.name,
+      unit: item.unitType,
+      cost_per_unit: item.currentCost ?? null,
+      current_stock: item.currentStock ?? 0,
+      min_stock_level: item.reorderLevel ?? null,
+    } as any;
+    const { error } = await supabase.from('stock_items').insert(payload);
+    if (!error) {
+      // refresh local state
+      await fetchFromDb();
+      return item;
+    }
+    console.warn('Supabase insert failed, falling back to local', error);
+  }
+
+  const items = load();
+  const next = [...items, item];
+  state = next;
+  persist(next);
+  emit();
+  return item;
+}
+
+export async function updateStockItem(itemId: string, patch: Partial<StockItem>) {
+  if (isSupabaseConfigured() && supabase) {
+    const payload: any = {};
+    if (patch.code !== undefined) payload.item_code = patch.code;
+    if (patch.name !== undefined) payload.name = patch.name;
+    if (patch.unitType !== undefined) payload.unit = patch.unitType;
+    if (patch.currentCost !== undefined) payload.cost_per_unit = patch.currentCost;
+    if (patch.currentStock !== undefined) payload.current_stock = patch.currentStock;
+    if (patch.reorderLevel !== undefined) payload.min_stock_level = patch.reorderLevel;
+    if (patch.supplierId !== undefined) payload.supplier_id = patch.supplierId;
+    if (patch.departmentId !== undefined) payload.department_id = patch.departmentId;
+
+    try {
+      const { error } = await supabase.from('stock_items').update(payload).eq('id', itemId);
+      if (!error) {
+        await fetchFromDb();
+        return;
+      }
+      console.warn('Supabase update failed', error);
+    } catch (err) {
+      console.warn('Supabase update error', err);
+    }
+  }
+
+  const existing = load();
+  const next = existing.map(s => (s.id === itemId ? { ...s, ...patch } : s));
+  state = next;
+  persist(next);
+  emit();
+}
+
+export function upsertStockItem(item: StockItem) {
+  // simple local upsert; for supabase callers should use addStockItem/updateStockItem
+  const existing = load();
+  const idx = existing.findIndex(s => s.id === item.id);
+  const next = idx >= 0 ? existing.map(s => (s.id === item.id ? { ...s, ...item } : s)) : [item, ...existing];
+  state = next;
+  persist(next);
+  emit();
+}
+
+export async function deleteStockItem(itemId: string) {
+  // Try Supabase first
+  if (isSupabaseConfigured() && supabase) {
+    try {
+      const { error } = await supabase.from('stock_items').delete().eq('id', itemId);
+      if (!error) {
+        await fetchFromDb();
+        return true;
+      }
+      console.warn('Supabase delete failed', error);
+    } catch (err) {
+      console.warn('Supabase delete error', err);
+    }
+  }
+
+  // Fallback to local deletion
+  const existing = load();
+  const next = existing.filter(s => s.id !== itemId);
+  state = next;
+  persist(next);
+  emit();
+  return true;
+}
+
+export function applyStockTakeAdjustments(adjustments: Array<{ itemId: string; newQty: number }>) {
+  if (!adjustments.length) return;
+  const existing = load();
+  const byId = new Map(existing.map((s) => [s.id, s] as const));
+
+  let changed = false;
+  for (const adj of adjustments) {
+    const item = byId.get(adj.itemId);
+    if (!item) continue;
+    const nextQty = Number.isFinite(adj.newQty) ? adj.newQty : item.currentStock;
+    if (!Number.isFinite(nextQty)) continue;
+    if (Math.abs((item.currentStock ?? 0) - nextQty) < 1e-9) continue;
+    byId.set(item.id, { ...item, currentStock: round2(nextQty) });
+    changed = true;
+  }
+
+  if (!changed) return;
+  const next = existing.map((s) => byId.get(s.id) ?? s);
+  state = next;
+  persist(next);
+  emit();
+}
+
+export function applyInternalTransfers(transfers: Array<{ fromItemId: string; toItemId: string; qty: number }> ):
+  | { ok: true; results: Array<{ fromBefore: number; fromAfter: number; toBefore: number; toAfter: number; unitCost: number }> }
+  | { ok: false; insufficient: Array<{ itemId: string; requiredQty: number; onHandQty: number }> } {
+  if (!transfers.length) return { ok: true, results: [] };
+
+  const existing = load();
+  const byId = new Map(existing.map((s) => [s.id, s] as const));
+
+  const insufficient: Array<{ itemId: string; requiredQty: number; onHandQty: number }> = [];
+  for (const t of transfers) {
+    const from = byId.get(t.fromItemId);
+    const qty = Number.isFinite(t.qty) ? t.qty : 0;
+    if (!from) continue;
+    const onHand = Number.isFinite(from.currentStock) ? from.currentStock : 0;
+    if (qty > onHand + 1e-9) insufficient.push({ itemId: t.fromItemId, requiredQty: qty, onHandQty: onHand });
+  }
+  if (insufficient.length) return { ok: false, insufficient };
+
+  const results: Array<{ fromBefore: number; fromAfter: number; toBefore: number; toAfter: number; unitCost: number }> = [];
+
+  for (const t of transfers) {
+    const from = byId.get(t.fromItemId);
+    const to = byId.get(t.toItemId);
+    const qty = Number.isFinite(t.qty) ? t.qty : 0;
+    if (!from || !to || qty <= 0) {
+      results.push({ fromBefore: 0, fromAfter: 0, toBefore: 0, toAfter: 0, unitCost: 0 });
+      continue;
+    }
+
+    const fromBefore = Number.isFinite(from.currentStock) ? from.currentStock : 0;
+    const toBefore = Number.isFinite(to.currentStock) ? to.currentStock : 0;
+    const unitCost = Number.isFinite(from.currentCost) ? from.currentCost : 0;
+
+    const fromAfter = round2(fromBefore - qty);
+    const toAfter = round2(toBefore + qty);
+
+    byId.set(from.id, { ...from, currentStock: fromAfter });
+    byId.set(to.id, { ...to, currentStock: toAfter });
+    results.push({ fromBefore, fromAfter, toBefore, toAfter, unitCost });
+  }
+
+  const next = existing.map((s) => byId.get(s.id) ?? s);
+  state = next;
+  persist(next);
+  emit();
+
+  return { ok: true, results };
+}
+
+export function applyStockDeductions(deductions: Array<{ itemId: string; qty: number }>):
+  | { ok: true; results: Array<{ itemId: string; before: number; after: number; unitCost: number }> }
+  | { ok: false; insufficient: Array<{ itemId: string; requiredQty: number; onHandQty: number }> } {
+  if (!deductions.length) return { ok: true, results: [] };
+
+  const existing = load();
+  const byId = new Map(existing.map((s) => [s.id, s] as const));
+
+  const insufficient: Array<{ itemId: string; requiredQty: number; onHandQty: number }> = [];
+  for (const d of deductions) {
+    const item = byId.get(d.itemId);
+    const qty = Number.isFinite(d.qty) ? d.qty : 0;
+    if (!item || qty <= 0) continue;
+    const onHand = Number.isFinite(item.currentStock) ? item.currentStock : 0;
+    if (qty > onHand + 1e-9) insufficient.push({ itemId: d.itemId, requiredQty: qty, onHandQty: onHand });
+  }
+  if (insufficient.length) return { ok: false, insufficient };
+
+  const results: Array<{ itemId: string; before: number; after: number; unitCost: number }> = [];
+  for (const d of deductions) {
+    const item = byId.get(d.itemId);
+    const qty = Number.isFinite(d.qty) ? d.qty : 0;
+    if (!item || qty <= 0) continue;
+
+    const before = Number.isFinite(item.currentStock) ? item.currentStock : 0;
+    const unitCost = Number.isFinite(item.currentCost) ? item.currentCost : 0;
+    const after = round2(before - qty);
+
+    byId.set(item.id, { ...item, currentStock: after });
+    results.push({ itemId: item.id, before, after, unitCost });
+  }
+
+  const next = existing.map((s) => byId.get(s.id) ?? s);
+  state = next;
+  persist(next);
+  emit();
+
+  return { ok: true, results };
+}
+
+function syncFinishedGoodCostToPosByCode(code: string, unitCost: number) {
+  try {
+    const items = getPosMenuItems();
+    const match = items.find(i => String(i.code) === String(code));
+    if (!match) return;
+    if (Math.abs((match.cost ?? 0) - unitCost) < 0.005) return;
+    upsertPosMenuItem({ ...match, cost: unitCost });
+  } catch {
+    // ignore
+  }
+}
+
+export function applyBatchProductionToStock(params: {
+  recipe: Recipe;
+  batch: BatchProduction;
+}):
+  | { ok: true }
+  | { ok: false; insufficient: Array<{ itemId: string; requiredQty: number; onHandQty: number }> } {
+  const { recipe, batch } = params;
+  const existing = load();
+  const byId = new Map(existing.map(s => [s.id, s] as const));
+
+  const insufficient: Array<{ itemId: string; requiredQty: number; onHandQty: number }> = [];
+  for (const ing of batch.ingredientsUsed) {
+    const item = byId.get(ing.ingredientId);
+    if (!item) continue;
+    const required = Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0;
+    const onHand = Number.isFinite(item.currentStock) ? item.currentStock : 0;
+    if (required > onHand + 1e-9) {
+      insufficient.push({ itemId: ing.ingredientId, requiredQty: required, onHandQty: onHand });
+    }
+  }
+  if (insufficient.length) return { ok: false, insufficient };
+
+  // Deduct ingredients
+  for (const ing of batch.ingredientsUsed) {
+    const item = byId.get(ing.ingredientId);
+    if (!item) continue;
+    const required = Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0;
+    const oldQty = Number.isFinite(item.currentStock) ? item.currentStock : 0;
+    byId.set(item.id, { ...item, currentStock: round2(oldQty - required) });
+  }
+
+  // Ensure finished good exists as a stock item (so batches can increase it)
+  const finishedId = `fg-${recipe.parentItemCode}`;
+  const existingFinished = byId.get(finishedId);
+  const producedQty = Number.isFinite(batch.actualOutput) ? batch.actualOutput : 0;
+
+  if (producedQty > 0) {
+    const oldQty = existingFinished ? (Number.isFinite(existingFinished.currentStock) ? existingFinished.currentStock : 0) : 0;
+    const oldCost = existingFinished ? (Number.isFinite(existingFinished.currentCost) ? existingFinished.currentCost : 0) : 0;
+    const newQty = round2(oldQty + producedQty);
+    const unitCostIn = Number.isFinite(batch.unitCost) ? batch.unitCost : recipe.unitCost;
+    const newCost = newQty > 0 ? (oldQty * oldCost + producedQty * unitCostIn) / newQty : unitCostIn;
+
+    const base: StockItem = existingFinished ?? {
+      id: finishedId,
+      code: String(recipe.parentItemCode),
+      name: String(recipe.parentItemName),
+      departmentId: recipe.finishedGoodDepartmentId ?? 'bakery',
+      unitType: recipe.outputUnitType,
+      lowestCost: unitCostIn,
+      highestCost: unitCostIn,
+      currentCost: unitCostIn,
+      currentStock: 0,
+    };
+
+    const lowest = Number.isFinite(base.lowestCost) ? base.lowestCost : unitCostIn;
+    const highest = Number.isFinite(base.highestCost) ? base.highestCost : unitCostIn;
+
+    byId.set(finishedId, {
+      ...base,
+      currentStock: newQty,
+      currentCost: round2(newCost),
+      lowestCost: round2(Math.min(lowest, unitCostIn)),
+      highestCost: round2(Math.max(highest, unitCostIn)),
+    });
+  }
+
+  const next = Array.from(byId.values());
+  state = next;
+  persist(next);
+  emit();
+
+  syncFinishedGoodCostToPosByCode(String(recipe.parentItemCode), batch.unitCost);
+  return { ok: true };
+}
+
+export function revertBatchProductionFromStock(params: {
+  recipe: Recipe;
+  batch: BatchProduction;
+}):
+  | { ok: true }
+  | { ok: false; insufficientFinishedGoods: Array<{ itemId: string; requiredQty: number; onHandQty: number }> } {
+  const { recipe, batch } = params;
+  const existing = load();
+  const byId = new Map(existing.map((s) => [s.id, s] as const));
+
+  const finishedId = `fg-${recipe.parentItemCode}`;
+  const producedQty = Number.isFinite(batch.actualOutput) ? batch.actualOutput : 0;
+
+  const insufficientFinishedGoods: Array<{ itemId: string; requiredQty: number; onHandQty: number }> = [];
+  if (producedQty > 0) {
+    const fg = byId.get(finishedId);
+    const onHand = fg && Number.isFinite(fg.currentStock) ? fg.currentStock : 0;
+    if (producedQty > onHand + 1e-9) {
+      insufficientFinishedGoods.push({ itemId: finishedId, requiredQty: producedQty, onHandQty: onHand });
+    }
+  }
+  if (insufficientFinishedGoods.length) return { ok: false, insufficientFinishedGoods };
+
+  // Add ingredients back
+  for (const ing of batch.ingredientsUsed) {
+    const item = byId.get(ing.ingredientId);
+    if (!item) continue;
+    const required = Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0;
+    const oldQty = Number.isFinite(item.currentStock) ? item.currentStock : 0;
+    byId.set(item.id, { ...item, currentStock: round2(oldQty + required) });
+  }
+
+  // Reduce finished goods
+  if (producedQty > 0) {
+    const fg = byId.get(finishedId);
+    if (fg) {
+      const oldQty = Number.isFinite(fg.currentStock) ? fg.currentStock : 0;
+      byId.set(finishedId, { ...fg, currentStock: round2(oldQty - producedQty) });
+    }
+  }
+
+  const next = Array.from(byId.values());
+  state = next;
+  persist(next);
+  emit();
+
+  return { ok: true };
+}
+
+export function applyGRVReceiptToStock(params: {
+  items: Array<{ itemId: string; quantity: number; unitCost: number }>;
+  costMode?: 'weightedAverage' | 'lastPurchase';
+}) {
+  const costMode = params.costMode ?? 'weightedAverage';
+
+  const existing = load();
+  const byId = new Map(existing.map(s => [s.id, s] as const));
+
+  for (const line of params.items) {
+    const item = byId.get(line.itemId);
+    if (!item) continue;
+
+    const qtyIn = Number.isFinite(line.quantity) ? line.quantity : 0;
+    const unitCostIn = Number.isFinite(line.unitCost) ? line.unitCost : 0;
+    if (qtyIn <= 0) continue;
+
+    const oldQty = Number.isFinite(item.currentStock) ? item.currentStock : 0;
+    const oldCost = Number.isFinite(item.currentCost) ? item.currentCost : 0;
+
+    const newQty = round2(oldQty + qtyIn);
+
+    let newCost = oldCost;
+    if (costMode === 'lastPurchase') {
+      newCost = unitCostIn;
+    } else {
+      // Weighted average cost
+      const denom = oldQty + qtyIn;
+      newCost = denom > 0 ? (oldQty * oldCost + qtyIn * unitCostIn) / denom : unitCostIn;
+    }
+
+    const lowest = Number.isFinite(item.lowestCost) ? item.lowestCost : unitCostIn;
+    const highest = Number.isFinite(item.highestCost) ? item.highestCost : unitCostIn;
+
+    byId.set(item.id, {
+      ...item,
+      currentStock: newQty,
+      currentCost: round2(newCost),
+      lowestCost: round2(Math.min(lowest, unitCostIn)),
+      highestCost: round2(Math.max(highest, unitCostIn)),
+    });
+  }
+
+  const next = existing.map(s => byId.get(s.id) ?? s);
+  state = next;
+  persist(next);
+  emit();
+}
+
+export function resetStockToSeed() {
+  state = seededStockItems.map(s => ({ ...s }));
+  persist(state);
+  emit();
+}

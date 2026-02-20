@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+  <defs>
+    <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="600" rx="36" fill="url(#g)"/>
+  <path d="M280 130h240l-30 330c-4 40-36 70-76 70h-28c-40 0-72-30-76-70l-30-330z" fill="#22c55e" opacity="0.25"/>
+  <path d="M310 160h180l-24 285c-2 22-20 39-42 39h-46c-22 0-40-17-42-39l-24-285z" fill="#60a5fa" opacity="0.35"/>
+  <rect x="360" y="92" width="80" height="34" rx="17" fill="#e5e7eb" opacity="0.2"/>
+  <text x="60" y="96" fill="#e5e7eb" font-family="ui-sans-serif, system-ui" font-size="44" font-weight="700">Mthunzi POS</text>
+  <text x="60" y="142" fill="#9ca3af" font-family="ui-sans-serif, system-ui" font-size="22">Drink image placeholder</text>
+</svg>

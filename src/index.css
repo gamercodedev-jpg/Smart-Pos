@@ -1,0 +1,224 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Classic Business ERP Design System
+   Professional, data-dense interface with navy/charcoal tones
+   All colors in HSL format
+*/
+
+@layer base {
+  :root {
+    /* Core backgrounds */
+    --background: 210 20% 98%;
+    --foreground: 220 25% 10%;
+
+    /* Cards and surfaces */
+    --card: 0 0% 100%;
+    --card-foreground: 220 25% 10%;
+
+    /* Popover/Dropdown */
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 25% 10%;
+
+    /* Primary - Navy Blue (professional) */
+    --primary: 220 60% 25%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Secondary - Cool Gray */
+    --secondary: 215 20% 94%;
+    --secondary-foreground: 220 25% 20%;
+
+    /* Muted - Subtle backgrounds */
+    --muted: 215 20% 96%;
+    --muted-foreground: 215 15% 45%;
+
+    /* Accent - Slate blue for highlights */
+    --accent: 215 30% 90%;
+    --accent-foreground: 220 60% 25%;
+
+    /* Destructive - Red for errors/negative values */
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Success - Green for positive values */
+    --success: 142 72% 29%;
+    --success-foreground: 0 0% 100%;
+
+    /* Warning - Amber for alerts */
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    /* Info - Blue for informational */
+    --info: 210 100% 50%;
+    --info-foreground: 0 0% 100%;
+
+    /* Borders and inputs */
+    --border: 215 25% 88%;
+    --input: 215 25% 88%;
+    --ring: 220 60% 25%;
+
+    --radius: 0.375rem;
+
+    /* Sidebar - Darker professional */
+    --sidebar-background: 220 30% 15%;
+    --sidebar-foreground: 215 20% 85%;
+    --sidebar-primary: 210 100% 60%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 30% 22%;
+    --sidebar-accent-foreground: 215 20% 90%;
+    --sidebar-border: 220 25% 25%;
+    --sidebar-ring: 210 100% 60%;
+
+    /* Data table specific */
+    --table-header: 215 25% 95%;
+    --table-row-hover: 215 25% 97%;
+    --table-row-selected: 210 50% 95%;
+
+    /* Status colors for variance/profit indicators */
+    --positive: 142 72% 29%;
+    --negative: 0 72% 51%;
+    --neutral: 215 15% 45%;
+  }
+
+  .dark {
+    --background: 222 84% 4%; /* #0B0E14 */
+    --foreground: 210 40% 98%;
+
+    --card: 222 47% 11%; /* #151921 */
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222 84% 4%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 217 91% 60%; /* #3B82F6 */
+    --primary-foreground: 222 47% 11%;
+
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 217 33% 17%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 84% 60%; /* #EF4444 */
+    --destructive-foreground: 210 40% 98%;
+    
+    --success: 142 71% 45%; /* #10B981 */
+    --success-foreground: 210 40% 98%;
+
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 217 91% 60%;
+
+    --radius: 0.5rem;
+
+    /* Data table specific (dark) */
+    --table-header: 222 25% 16%;
+    --table-row-hover: 222 22% 20%;
+    --table-row-selected: 222 22% 24%;
+
+    /* Status colors for variance/profit indicators (dark) */
+    --positive: 142 71% 45%;
+    --negative: 0 84% 60%;
+    --neutral: 215 20% 65%;
+  }
+
+  /* POS terminal theme: light surfaces with orange primary (matches reference POS style) */
+  .pos-light {
+    --background: 0 0% 100%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    /* Orange primary */
+    --primary: 24 95% 53%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+
+    --accent: 210 40% 96%;
+    --accent-foreground: 222 47% 11%;
+
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 24 95% 53%;
+
+    --radius: 0.75rem;
+  }
+}
+
+.mthunzi-card {
+  @apply bg-card/85 backdrop-blur-xl border border-white/15 rounded-lg;
+}
+
+/* Data-dense table styling */
+.data-table {
+  @apply text-sm;
+}
+
+.data-table th {
+  @apply bg-[hsl(var(--table-header))] font-semibold text-xs uppercase tracking-wider;
+}
+
+.data-table tr:hover {
+  @apply bg-[hsl(var(--table-row-hover))];
+}
+
+/* Numeric data alignment */
+.numeric {
+  @apply text-right font-mono tabular-nums;
+}
+
+/* Status indicators */
+.status-positive {
+  @apply text-[hsl(var(--positive))];
+}
+
+/* KPI Cards */
+.kpi-card {
+  @apply bg-card border rounded-lg p-4 shadow-sm;
+}
+
+.kpi-value {
+  @apply text-2xl font-bold tabular-nums;
+}
+
+.kpi-label {
+  @apply text-sm text-muted-foreground;
+}
+
+body {
+  @apply bg-background text-foreground;
+  font-feature-settings: "rlig" 1, "calt" 1;
+}
+
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+
+  .print-area,
+  .print-area * {
+    visibility: visible !important;
+  }
+
+  .print-area {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 100%;
+    border: none !important;
+    box-shadow: none !important;
+  }
+}
