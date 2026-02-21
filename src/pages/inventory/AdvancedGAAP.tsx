@@ -220,7 +220,7 @@ export default function AdvancedGAAP() {
 
   const canAutoBuildRecipe = Boolean(menuItem && !recipe && stockItems.length);
 
-  const autoBuildRecipe = () => {
+  const autoBuildRecipe = async () => {
     if (!menuItem) return;
     const suggestions = suggestIngredients({ menuItem, stockItems, limit: 10 });
     if (!suggestions.length) {
@@ -247,7 +247,7 @@ export default function AdvancedGAAP() {
       .filter(Boolean) as any;
 
     const code = String(menuItem.code ?? '').trim() || String(menuItem.id);
-    const created = upsertManufacturingRecipe({
+    const created = await upsertManufacturingRecipe({
       parentItemId: code,
       parentItemCode: code,
       parentItemName: String(menuItem.name),

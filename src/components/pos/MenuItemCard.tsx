@@ -1,6 +1,8 @@
 import { Card, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { POSMenuItem } from '@/types/pos';
+import { useEffect, useState } from 'react';
+import { isSupabaseConfigured, supabase, SUPABASE_BUCKET } from '@/lib/supabaseClient';
 
 type Props = {
   item: POSMenuItem;
@@ -9,6 +11,40 @@ type Props = {
 };
 
 export default function MenuItemCard({ item, onAdd, className }: Props) {
+  const [imgSrc, setImgSrc] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    let mounted = true;
+    const resolve = async () => {
+      try {
+        const img = (item as any).image;
+        if (!img) {
+          if (mounted) setImgSrc(undefined);
+          return;
+        }
+        if (typeof img === 'string' && img.startsWith('http')) {
+          if (mounted) setImgSrc(img);
+          return;
+        }
+        if (isSupabaseConfigured() && supabase && typeof img === 'string') {
+          try {
+            const path = img.replace(/^\/+/, '');
+            const { data } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(path);
+            const pub = (data as any)?.publicUrl ?? undefined;
+            if (mounted) setImgSrc(pub);
+            return;
+          } catch (e) {
+            // fallthrough to undefined
+          }
+        }
+      } catch {
+        // ignore
+      }
+      if (mounted) setImgSrc(undefined);
+    };
+    void resolve();
+    return () => { mounted = false; };
+  }, [item]);
   return (
     <Card
       className={cn(
@@ -25,7 +61,7 @@ export default function MenuItemCard({ item, onAdd, className }: Props) {
       <CardContent className="p-0 h-full">
         <div className="absolute inset-0">
           <img
-            src={item.image ?? '/menu/placeholder-burger.svg'}
+            src={imgSrc ?? '/menu/placeholder-burger.svg'}
             alt={item.name}
             className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
             loading="lazy"

@@ -48,9 +48,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!user) {
       console.warn("AuthProvider: No user found in localStorage or users list.");
     }
-    const refreshed = users.find(u => u.id === user.id) ?? null;
-    if (refreshed && refreshed.isActive) setUser(refreshed);
-    if (!refreshed || !refreshed.isActive) setUser(defaultUser);
+    const refreshed = user ? users.find(u => u.id === user.id) ?? null : null;
+    if (refreshed && refreshed.isActive) {
+      setUser(refreshed);
+    } else {
+      setUser(defaultUser);
+    }
   }, [users, user, defaultUser]);
 
   useEffect(() => {

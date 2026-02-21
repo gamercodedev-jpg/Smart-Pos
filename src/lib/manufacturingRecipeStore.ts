@@ -1,7 +1,8 @@
 import type { Recipe, RecipeIngredient, StockItem, UnitType } from '@/types';
-import { recipes as seededRecipes } from '@/data/mockData';
+// No seeded recipes: production data should be stored in the database
 import { getStockItemsSnapshot } from '@/lib/stockStore';
 import { getPosMenuItems, upsertPosMenuItem } from '@/lib/posMenuStore';
+import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient';
 
 const STORAGE_KEY = 'mthunzi.manufacturing.recipes.v1';
 
@@ -14,39 +15,114 @@ function emit() {
   for (const l of listeners) l();
 }
 
-function persist(next: Recipe[]) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // ignore
+function persist(_next: Recipe[]) {
+  // Persistence now handled by Supabase; keep noop for API compatibility
+}
+
+async function fetchFromDb() {
+  if (!isSupabaseConfigured() || !supabase) return;
+
+    try {
+    // Read metadata from `manufacturing_recipes` and ingredients from
+    // `manufacturing_recipe_ingredients`. Legacy `recipes` table is no longer used.
+    const { data: metas, error: metaErr } = await supabase.from('manufacturing_recipes').select('*');
+    if (metaErr) {
+      console.warn('Failed to fetch manufacturing_recipes', metaErr);
+      return;
+    }
+
+    const stockSnapshot = getStockItemsSnapshot();
+    const results: Recipe[] = [];
+
+    for (const m of metas ?? []) {
+      const ingredients: RecipeIngredient[] = [];
+
+      try {
+        const { data: ingRows, error: ingErr } = await supabase
+          .from('manufacturing_recipe_ingredients')
+          .select('quantity_used, stock_item_id, stock_items(id,name,item_code,unit,cost_per_unit)')
+          .eq('manufacturing_recipe_id', m.id);
+
+        if (ingErr) {
+          console.warn('Failed to fetch manufacturing_recipe_ingredients for', m.id, ingErr);
+        } else {
+          for (const r of (ingRows ?? []) as any[]) {
+            const si = r.stock_items;
+            const stock = stockSnapshot.find((s) => s.id === (si?.id ?? r.stock_item_id));
+            ingredients.push({
+              id: safeId('ri'),
+              ingredientId: si?.id ?? r.stock_item_id,
+              ingredientCode: si?.item_code ?? (stock?.code ?? ''),
+              ingredientName: si?.name ?? (stock?.name ?? ''),
+              requiredQty: Number(r.quantity_used) ?? 0,
+              unitType: (si?.unit ?? (stock?.unitType ?? 'EACH')) as UnitType,
+              unitCost: Number(si?.cost_per_unit ?? stock?.currentCost ?? 0),
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to fetch manufacturing_recipe_ingredients for', m.id, e);
+      }
+      
+      
+
+      // determine whether this metadata row is tied to a product or standalone
+      const hasProduct = !!m.product_id;
+      const pid = hasProduct ? String(m.product_id) : undefined;
+
+      // try to fetch a product record for friendly name/code when available
+      let parentName = '';
+      try {
+        if (hasProduct && pid) {
+          const { data: prod } = await supabase.from('products').select('id,name,base_price').eq('id', pid).maybeSingle();
+          if (prod) parentName = prod.name ?? '';
+        }
+      } catch {
+        // ignore
+      }
+
+      const recipeId = hasProduct && pid ? `prod-${pid}` : `meta-${String(m.id)}`;
+      const parentItemId = hasProduct && pid ? pid : String(m.id);
+      const parentItemCode = String(m.code ?? m.product_code ?? pid ?? m.id);
+      const parentItemName = parentName || String(m.name ?? m.code ?? m.product_code ?? (pid ?? m.id));
+
+      const recipe: Recipe = {
+        id: recipeId,
+        parentItemId: parentItemId,
+        parentItemCode: parentItemCode,
+        parentItemName: parentItemName,
+        finishedGoodDepartmentId: m.finished_department_id ?? (m.finished_department ?? undefined) ?? '',
+        outputQty: Number(m.output_qty) || 1,
+        outputUnitType: (m.unit_type as UnitType) ?? 'EACH',
+        ingredients,
+        totalCost: 0,
+        unitCost: 0,
+      };
+
+      results.push(recomputeRecipe(recipe, stockSnapshot));
+    }
+
+    state = results;
+    persist(state);
+    emit();
+  } catch (err) {
+    console.warn('Failed to fetch/assemble recipes from Supabase', err);
   }
 }
 
-function seed(): Recipe[] {
-  return seededRecipes.map((r) => ({
-    ...r,
-    ingredients: r.ingredients.map((i) => ({ ...i })),
-  }));
+function seed(): Recipe[] { return []; }
+
+function ensureRemoteLoaded() {
+  if (!state && isSupabaseConfigured() && supabase) {
+    void fetchFromDb();
+  }
 }
 
 function load(): Recipe[] {
   if (state) return state;
-
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Recipe[];
-      if (Array.isArray(parsed)) {
-        state = parsed;
-        return state;
-      }
-    }
-  } catch {
-    // ignore
-  }
-
-  state = seed();
-  persist(state);
+  ensureRemoteLoaded();
+  // If Supabase is not configured or fetch is pending, return empty list to avoid crashes.
+  state = [];
   return state;
 }
 
@@ -101,6 +177,11 @@ function syncRecipeCostToPos(recipe: Recipe) {
 
 export function subscribeManufacturingRecipes(listener: Listener) {
   listeners = [...listeners, listener];
+  // lazy load from Supabase when available
+  if (!state && isSupabaseConfigured() && supabase) {
+    void fetchFromDb();
+  }
+
   return () => {
     listeners = listeners.filter((l) => l !== listener);
   };
@@ -114,7 +195,7 @@ export function getManufacturingRecipeById(recipeId: string): Recipe | undefined
   return load().find((r) => r.id === recipeId);
 }
 
-export function upsertManufacturingRecipe(input: Omit<Recipe, 'id' | 'totalCost' | 'unitCost'> & { id?: string }) {
+export async function upsertManufacturingRecipe(input: Omit<Recipe, 'id' | 'totalCost' | 'unitCost'> & { id?: string }) {
   const stockItems = getStockItemsSnapshot();
 
   const base: Recipe = {
@@ -135,19 +216,209 @@ export function upsertManufacturingRecipe(input: Omit<Recipe, 'id' | 'totalCost'
   emit();
 
   syncRecipeCostToPos(computed);
+
+  // Try to persist to Supabase for canonical storage (recipes table maps product_id -> stock_item_id)
+  if (isSupabaseConfigured() && supabase) {
+    try {
+      // Do not attempt to lookup or create `products` from the client. Recipes
+      // must be allowed to exist independently; keep `product_id` null and
+      // persist the `product_code` for later linking by a server-side process
+      // or when a product/menu item is created.
+      let resolvedProductId: string | undefined = undefined;
+
+      // Upsert recipe metadata into manufacturing_recipes; always include code (product_code)
+      const meta = {
+        product_id: resolvedProductId ?? null,
+        product_code: computed.parentItemCode ?? null,
+        name: computed.parentItemName ?? null,
+        code: computed.parentItemCode ?? null,
+        output_qty: computed.outputQty ?? 1,
+        unit_type: computed.outputUnitType ?? 'EACH',
+        finished_department_id: computed.finishedGoodDepartmentId ?? null,
+      };
+
+      // Strategy:
+      // 1. Try to find an existing metadata row by (in order): explicit meta id, product_code, product_id.
+      // 2. If found, `update` that row. Otherwise `insert` a new row.
+      let upsertRes: any = null;
+      try {
+        const selectCols = 'id,product_id,product_code,name,code,output_qty,unit_type,finished_department_id';
+
+        // Helper to find existing meta id
+        let foundMetaId: string | undefined = undefined;
+
+        // If input.id follows our `meta-<uuid>` pattern, prefer that as the metadata id
+        if (input.id && typeof input.id === 'string' && input.id.startsWith('meta-')) {
+          const possible = input.id.replace(/^meta-/, '');
+          if (possible) foundMetaId = possible;
+        }
+
+        // If not found yet, try to locate by product_code
+        if (!foundMetaId && computed.parentItemCode) {
+          try {
+            const { data: existing, error: exErr } = await supabase.from('manufacturing_recipes').select('id').eq('product_code', computed.parentItemCode).maybeSingle();
+            if (!exErr && existing && (existing as any).id) foundMetaId = String((existing as any).id);
+          } catch (e) {
+            // ignore
+          }
+        }
+
+        // If still not found, try by product_id when resolvedProductId present
+        if (!foundMetaId && resolvedProductId) {
+          try {
+            const { data: existing2, error: ex2 } = await supabase.from('manufacturing_recipes').select('id').eq('product_id', resolvedProductId).maybeSingle();
+            if (!ex2 && existing2 && (existing2 as any).id) foundMetaId = String((existing2 as any).id);
+          } catch (e) {
+            // ignore
+          }
+        }
+
+        if (foundMetaId) {
+          // update existing metadata row
+          try {
+            upsertRes = await supabase.from('manufacturing_recipes').update(meta).eq('id', foundMetaId).select(selectCols);
+            if (upsertRes?.error) console.warn('manufacturing_recipes update error', upsertRes.error, upsertRes);
+          } catch (e) {
+            console.warn('manufacturing_recipes update exception', e);
+          }
+        } else {
+          // insert new metadata row
+          try {
+            upsertRes = await supabase.from('manufacturing_recipes').insert([meta]).select(selectCols);
+            if (upsertRes?.error) console.warn('manufacturing_recipes insert error', upsertRes.error, upsertRes);
+          } catch (e) {
+            console.warn('manufacturing_recipes insert exception', e);
+          }
+        }
+
+      } catch (e) {
+        console.warn('manufacturing_recipes upsert/insert failed', e);
+      }
+
+      // Extract meta id from response
+      let metaId: string | undefined = undefined;
+      if (upsertRes && upsertRes.data && Array.isArray(upsertRes.data) && upsertRes.data[0]) {
+        metaId = String(upsertRes.data[0].id ?? upsertRes.data[0].product_id ?? upsertRes.data[0].id);
+      }
+
+      // If we couldn't get an id from public, try legacy erp schema as a fallback
+      if (!metaId) {
+        try {
+          const up2 = await supabase!.schema('erp').from('manufacturing_recipes').upsert([meta]).select();
+          if (up2 && up2.data && Array.isArray(up2.data) && up2.data[0]) metaId = String(up2.data[0].id ?? up2.data[0].product_id ?? up2.data[0].id);
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      // Persist ingredient rows into `manufacturing_recipe_ingredients` referencing manufacturing_recipes.id
+      if (metaId) {
+        // Delete existing ingredient rows for this meta to keep things idempotent
+        try {
+          const { error: delErr } = await supabase.from('manufacturing_recipe_ingredients').delete().eq('manufacturing_recipe_id', metaId);
+          if (delErr) console.warn('Failed to delete existing manufacturing_recipe_ingredients', delErr);
+        } catch (e) {
+          // ignore
+        }
+
+        if (computed.ingredients.length) {
+          const rows = computed.ingredients.map((ing) => ({ manufacturing_recipe_id: metaId, stock_item_id: ing.ingredientId, quantity_used: ing.requiredQty }));
+          try {
+            const { data: insData, error: insErr, status: insStatus } = await supabase.from('manufacturing_recipe_ingredients').insert(rows).select();
+            if (insErr) console.warn('Failed to insert manufacturing_recipe_ingredients', { status: insStatus, error: insErr, data: insData });
+          } catch (e) {
+            try {
+              await supabase!.schema('erp').from('manufacturing_recipe_ingredients').insert(rows).select();
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
+
+      // Refresh canonical state from DB after writes
+      try {
+        await fetchFromDb();
+      } catch {
+        // ignore
+      }
+    } catch (err) {
+      console.warn('Failed to sync recipe to Supabase', err);
+    }
+  } else {
+    console.warn('Supabase not configured - manufacturing recipes will not be persisted');
+  }
+
   return computed;
 }
 
-export function deleteManufacturingRecipe(recipeId: string) {
+export async function deleteManufacturingRecipe(recipeId: string) {
   const existing = load();
-  const next = existing.filter((r) => r.id !== recipeId);
-  state = next;
-  persist(next);
+  const removed = existing.find((r) => r.id === recipeId);
+  // Optimistic in-memory remove
+  state = existing.filter((r) => r.id !== recipeId);
   emit();
+
+  if (!removed) return;
+
+  if (!isSupabaseConfigured() || !supabase) {
+    console.warn('Supabase not configured - delete not persisted');
+    return;
+  }
+
+  try {
+    // Our `removed.id` uses either `meta-<metaId>` or `prod-<productId>`.
+    if (removed.id && removed.id.startsWith('meta-')) {
+      const metaId = removed.id.replace(/^meta-/, '');
+      try {
+        const { error: e1 } = await supabase.from('manufacturing_recipe_ingredients').delete().eq('manufacturing_recipe_id', metaId);
+        if (e1) console.warn('Failed to delete manufacturing_recipe_ingredients by metadata id', e1);
+      } catch (err) {
+        console.warn('Supabase delete error', err);
+      }
+
+      try {
+        const { error: e2 } = await supabase.from('manufacturing_recipes').delete().eq('id', metaId);
+        if (e2) console.warn('Failed to delete manufacturing_recipes metadata by id', e2);
+      } catch (err) {
+        console.warn('Supabase delete error', err);
+      }
+    } else if (removed.id && removed.id.startsWith('prod-')) {
+      const productId = removed.parentItemId;
+      try {
+        const { error: e1 } = await supabase.from('manufacturing_recipes').delete().eq('product_id', productId);
+        if (e1) console.warn('Failed to delete manufacturing_recipes metadata by product_id', e1);
+      } catch (err) {
+        console.warn('Supabase delete error', err);
+      }
+    } else {
+      // Fallback: try to delete by metadata id stored in parentItemId
+      const metaId = removed.parentItemId;
+      try {
+        const { error: e1 } = await supabase.from('manufacturing_recipe_ingredients').delete().eq('manufacturing_recipe_id', metaId);
+        if (e1) console.warn('Failed to delete manufacturing_recipe_ingredients by metadata id (fallback)', e1);
+      } catch (err) {
+        console.warn('Supabase delete error', err);
+      }
+
+      try {
+        const { error: e2 } = await supabase.from('manufacturing_recipes').delete().eq('id', metaId);
+        if (e2) console.warn('Failed to delete manufacturing_recipes metadata by id (fallback)', e2);
+      } catch (err) {
+        console.warn('Supabase delete error', err);
+      }
+    }
+
+    // Refresh canonical state
+    try { await fetchFromDb(); } catch { /* ignore */ }
+  } catch (err) {
+    console.warn('Failed to delete manufacturing recipe from Supabase', err);
+  }
 }
 
 export function resetManufacturingRecipesToSeed() {
-  state = seed();
-  persist(state);
+  // refresh from Supabase (no local seed)
+  state = [];
   emit();
+  if (isSupabaseConfigured() && supabase) void fetchFromDb();
 }

@@ -1,7 +1,17 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+const DEFAULT_SUPABASE_URL = 'https://rbxvjmsqpnoncncwglms.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJieHZqbXNxcG5vbmNuY3dnbG1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE1ODI5OTMsImV4cCI6MjA4NzE1ODk5M30.NVNiJf1SIcfDgI1mjqPu2ITvIERqWjM4YsNpv8Xvogk';
+
+const supabaseUrl =
+  (import.meta.env.VITE_SUPABASE_URL as string | undefined) ?? DEFAULT_SUPABASE_URL;
+const supabaseAnonKey =
+  (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) ?? DEFAULT_SUPABASE_ANON_KEY;
+
+const DEFAULT_SUPABASE_BUCKET = 'product-images';
+export const SUPABASE_BUCKET =
+  (import.meta.env.VITE_SUPABASE_BUCKET as string | undefined) ?? DEFAULT_SUPABASE_BUCKET;
 
 export function isSupabaseConfigured() {
   return Boolean(supabaseUrl && supabaseAnonKey);

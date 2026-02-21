@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from '@/components/ui/command';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { departments } from '@/data/mockData';
+import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient';
 import type { DepartmentId, Recipe, RecipeIngredient, StockItem, UnitType } from '@/types';
 import { getManufacturingRecipesSnapshot, subscribeManufacturingRecipes, upsertManufacturingRecipe, deleteManufacturingRecipe } from '@/lib/manufacturingRecipeStore';
 import { getStockItemsSnapshot, subscribeStockItems } from '@/lib/stockStore';
@@ -43,6 +43,16 @@ export default function Recipes() {
     setEditorOpen(true);
   };
 
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteManufacturingRecipe(id);
+      // fetchFromDb is called inside store delete; snapshot subscription will update UI
+    } catch (err) {
+      console.error('Delete recipe failed', err);
+      alert('Failed to delete recipe. Check console for details.');
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -70,7 +80,7 @@ export default function Recipes() {
                 <div className="flex items-center gap-2">
                   <span className="text-lg font-bold">K {recipe.unitCost.toFixed(2)}/unit</span>
                   <Button variant="ghost" size="icon" onClick={() => onEdit(recipe.id)}><Edit className="h-4 w-4" /></Button>
-                  <Button variant="ghost" size="icon" onClick={() => deleteManufacturingRecipe(recipe.id)}><Trash2 className="h-4 w-4" /></Button>
+                  <Button variant="ghost" size="icon" onClick={() => void handleDelete(recipe.id)}><Trash2 className="h-4 w-4" /></Button>
                 </div>
               </div>
             </CardHeader>
@@ -104,9 +114,17 @@ export default function Recipes() {
 
       <RecipeEditorDialog
         open={editorOpen}
-        onOpenChange={setEditorOpen}
+        onOpenChange={(open) => {
+          setEditorOpen(open);
+          if (!open) setEditingId(null);
+        }}
         editing={editingId ? recipes.find(r => r.id === editingId) ?? null : null}
         stockItems={stockItems}
+        onSaved={(r) => {
+          // select the saved recipe and close editor
+          try { setEditingId(r.id); } catch {}
+          setEditorOpen(false);
+        }}
       />
     </div>
   );
@@ -135,21 +153,25 @@ function computeCosts(params: { draft: { outputQty: number; ingredients: DraftIn
   return { totalCost: total, unitCost: unit };
 }
 
-function RecipeEditorDialog(props: {
+export function RecipeEditorDialog(props: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   editing: Recipe | null;
   stockItems: StockItem[];
+  onSaved?: (r: { id: string; parentItemCode: string; parentItemName: string }) => void;
+  initialValues?: { parentItemName?: string; parentItemCode?: string; parentItemId?: string; finishedGoodDepartmentId?: DepartmentId };
 }) {
-  const { open, onOpenChange, editing, stockItems } = props;
+  const { open, onOpenChange, editing, stockItems, initialValues } = props;
 
   const posMenuItems = useSyncExternalStore(subscribePosMenu, getPosMenuItemsSnapshot, getPosMenuItemsSnapshot);
+
+  const [departmentsList, setDepartmentsList] = useState<{ id: string; name: string }[]>([]);
 
   const [name, setName] = useState(editing?.parentItemName ?? '');
   const [code, setCode] = useState(editing?.parentItemCode ?? '');
   const [parentItemId, setParentItemId] = useState(editing?.parentItemId ?? '');
   const [autoLinkedCode, setAutoLinkedCode] = useState<string | null>(null);
-  const [finishedDept, setFinishedDept] = useState<DepartmentId>((editing?.finishedGoodDepartmentId ?? 'bakery') as DepartmentId);
+  const [finishedDept, setFinishedDept] = useState<DepartmentId>((editing?.finishedGoodDepartmentId ?? '') as DepartmentId);
   const [outputQty, setOutputQty] = useState<number>(editing?.outputQty ?? 1);
   const [outputUnitType, setOutputUnitType] = useState<UnitType>((editing?.outputUnitType ?? 'EACH') as UnitType);
   const [ingredients, setIngredients] = useState<DraftIngredient[]>(
@@ -161,25 +183,58 @@ function RecipeEditorDialog(props: {
   // Reset when opening or changing edit target
   useEffect(() => {
     if (!open) return;
-    setName(editing?.parentItemName ?? '');
-    setCode(editing?.parentItemCode ?? '');
-    setParentItemId(editing?.parentItemId ?? '');
+    setName(editing?.parentItemName ?? initialValues?.parentItemName ?? '');
+    setCode(editing?.parentItemCode ?? initialValues?.parentItemCode ?? '');
+    setParentItemId(editing?.parentItemId ?? initialValues?.parentItemId ?? '');
     setAutoLinkedCode(null);
-    setFinishedDept((editing?.finishedGoodDepartmentId ?? 'bakery') as DepartmentId);
+    setFinishedDept((editing?.finishedGoodDepartmentId ?? initialValues?.finishedGoodDepartmentId ?? (departmentsList.length ? departmentsList[0].id : '')) as DepartmentId);
     setOutputQty(editing?.outputQty ?? 1);
     setOutputUnitType((editing?.outputUnitType ?? 'EACH') as UnitType);
     setIngredients((editing?.ingredients ?? []).map((i) => ({ id: i.id, ingredientId: i.ingredientId, requiredQty: i.requiredQty })));
-  }, [open, editing?.id]);
+  }, [open, editing?.id, departmentsList, initialValues?.parentItemCode, initialValues?.parentItemName]);
+
+  const nameMatches = useMemo(() => {
+    const q = name.trim().toLowerCase();
+    if (!q) return [] as typeof posMenuItems;
+    return posMenuItems.filter(p => (p.name ?? '').toLowerCase().includes(q) || String(p.code ?? '').toLowerCase().includes(q)).slice(0, 10);
+  }, [name, posMenuItems]);
+
+  const codeMatches = useMemo(() => {
+    const q = code.trim().toLowerCase();
+    if (!q) return [] as typeof posMenuItems;
+    return posMenuItems.filter(p => String(p.code ?? '').toLowerCase().includes(q) || (p.name ?? '').toLowerCase().includes(q)).slice(0, 10);
+  }, [code, posMenuItems]);
+
+  // Load departments from Supabase or fallback to seeded data
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      try {
+        if (isSupabaseConfigured() && supabase) {
+          const { data } = await supabase.from('departments').select('id,name').order('name', { ascending: true });
+          if (!mounted) return;
+          if (Array.isArray(data)) setDepartmentsList(data as any);
+        } else {
+          // fallback to empty list — Settings page manages seeded fallback and editing should still work
+          setDepartmentsList([]);
+        }
+      } catch {
+        // ignore and leave as empty
+      }
+    };
+    void load();
+    return () => { mounted = false; };
+  }, []);
 
   const matchedItem = useMemo(() => {
     const c = code.trim();
     if (!c) return null as null | { source: 'pos' | 'stock'; id: string; name: string; code: string };
 
+    // Only match POS/menu items for the parent link. Stock items are ingredients
+    // and should not be used as the recipe's parent item. If no POS item is
+    // found we'll allow a standalone recipe to be created and linked later.
     const mi = posMenuItems.find((x) => String(x.code).trim() === c) ?? null;
     if (mi) return { source: 'pos' as const, id: mi.id, name: mi.name, code: String(mi.code) };
-
-    const si = stockItems.find((x) => String(x.code).trim() === c) ?? null;
-    if (si) return { source: 'stock' as const, id: si.id, name: si.name, code: String(si.code) };
 
     return null;
   }, [code, posMenuItems, stockItems]);
@@ -215,7 +270,7 @@ function RecipeEditorDialog(props: {
     setIngredients(prev => prev.filter(i => i.id !== id));
   };
 
-  const save = () => {
+  const save = async () => {
     const trimmedName = name.trim();
     const trimmedCode = code.trim();
     if (!trimmedName || !trimmedCode) return;
@@ -237,7 +292,7 @@ function RecipeEditorDialog(props: {
       })
       .filter((i) => i.requiredQty > 0);
 
-    upsertManufacturingRecipe({
+    await upsertManufacturingRecipe({
       id: editing?.id,
       parentItemId: (parentItemId && parentItemId.trim() ? parentItemId : (editing?.parentItemId ?? trimmedCode)),
       parentItemCode: trimmedCode,
@@ -247,6 +302,17 @@ function RecipeEditorDialog(props: {
       outputUnitType,
       ingredients: recipeIngredients,
     });
+
+    // Refresh canonical snapshot and notify parent with the saved recipe
+    try {
+      // find saved recipe by code from canonical snapshot
+      const saved = getManufacturingRecipesSnapshot().find(r => String(r.parentItemCode) === trimmedCode) ?? null;
+      if (props.onSaved && saved) {
+        props.onSaved({ id: saved.id, parentItemCode: saved.parentItemCode, parentItemName: saved.parentItemName });
+      }
+    } catch (e) {
+      // ignore
+    }
 
     onOpenChange(false);
   };
@@ -272,26 +338,54 @@ function RecipeEditorDialog(props: {
               }}
               placeholder="e.g. Burger"
             />
+            {nameMatches.length > 0 ? (
+              <div className="mt-1 max-h-40 overflow-auto rounded-md border bg-background">
+                {nameMatches.map((m) => (
+                  <button key={m.id} type="button" className="w-full text-left px-3 py-2 hover:bg-muted-foreground/5" onClick={() => {
+                    setName(m.name);
+                    setCode(String(m.code ?? ''));
+                    setParentItemId(m.id);
+                    setAutoLinkedCode(String(m.code ?? ''));
+                  }}>
+                    <div className="font-medium">{m.name}</div>
+                    <div className="text-xs text-muted-foreground">{m.code}</div>
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
           <div className="space-y-1">
             <Label>Code</Label>
             <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="e.g. 2030" />
             {matchedItem ? (
-              <div className="text-xs text-muted-foreground">
-                Matched {matchedItem.source === 'pos' ? 'POS item' : 'stock item'}: <span className="text-foreground font-medium">{matchedItem.name}</span>
-              </div>
+              <div className="text-xs text-muted-foreground">Matched POS item: <span className="text-foreground font-medium">{matchedItem.name}</span></div>
             ) : code.trim() ? (
-              <div className="text-xs text-muted-foreground">No item found for this code yet.</div>
+              <div className="text-xs text-muted-foreground">No menu item found for this code — the recipe will be saved standalone and can be linked later.</div>
+            ) : null}
+            {codeMatches.length > 0 ? (
+              <div className="mt-1 max-h-40 overflow-auto rounded-md border bg-background">
+                {codeMatches.map((m) => (
+                  <button key={m.id} type="button" className="w-full text-left px-3 py-2 hover:bg-muted-foreground/5" onClick={() => {
+                    setCode(String(m.code ?? ''));
+                    setName(m.name);
+                    setParentItemId(m.id);
+                    setAutoLinkedCode(String(m.code ?? ''));
+                  }}>
+                    <div className="font-medium">{m.name}</div>
+                    <div className="text-xs text-muted-foreground">{m.code}</div>
+                  </button>
+                ))}
+              </div>
             ) : null}
           </div>
           <div className="space-y-1">
-            <Label>Finished Goods Department</Label>
+            <Label>Finished Goods Category</Label>
             <Select value={finishedDept} onValueChange={(v) => setFinishedDept(v as DepartmentId)}>
               <SelectTrigger>
                 <SelectValue placeholder="Select department" />
               </SelectTrigger>
               <SelectContent>
-                {departments.map((d) => (
+                {departmentsList.map((d) => (
                   <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
                 ))}
               </SelectContent>
