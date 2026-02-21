@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils';
 import PaymentDialog from '@/components/pos/PaymentDialog';
 import { InsufficientStockError, RecipeIncompleteError } from '@/lib/recipeEngine';
 import { getManufacturingRecipesSnapshot } from '@/lib/manufacturingRecipeStore';
-import { applyStockDeductions, getStockItemById } from '@/lib/stockStore';
+import { applyStockDeductions, getStockItemById, deductStockItemsRemote } from '@/lib/stockStore';
 import { getOrdersSnapshot, subscribeOrders, upsertOrder } from '@/lib/orderStore';
 import MenuItemCard from '@/components/pos/MenuItemCard';
 import { getModifierGroup } from '@/data/posModifiers';
@@ -376,11 +376,24 @@ export default function POSTerminal() {
     clearOrder();
   };
 
-  const applyRecipeDeductionsOrThrow = () => {
+  const applyRecipeDeductionsOrThrow = async () => {
     const toDeduct = orderItems.filter((i) => !i.isVoided && !i.sentToKitchen);
     if (!toDeduct.length) return;
 
     const menuById = new Map(items.map((mi) => [mi.id, mi] as const));
+    // Ensure remote recipes are loaded before computing deductions so
+    // we don't silently skip deductions when the snapshot hasn't hydrated yet.
+    try {
+      // dynamic import to avoid circular deps at module-eval time
+      const mr = await import('@/lib/manufacturingRecipeStore');
+      if (mr && typeof mr.ensureRecipesLoaded === 'function') {
+        // wait for remote fetch to complete (best-effort)
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+        await mr.ensureRecipesLoaded();
+      }
+    } catch {
+      // ignore; we'll proceed with snapshot which may be empty
+    }
     const recipes = getManufacturingRecipesSnapshot();
     const recipeByCode = new Map(recipes.map((r) => [String(r.parentItemCode), r] as const));
 
@@ -437,7 +450,8 @@ export default function POSTerminal() {
       throw new RecipeIncompleteError('STOCK_ITEMS_MISSING', missingStockItemIds.slice(0, 10));
     }
 
-    const res = applyStockDeductions(deductions);
+    // Try to apply deductions on the server first; fall back to local deduction.
+    const res = await deductStockItemsRemote(deductions as any);
     if (res.ok !== true) {
       const first = res.insufficient[0];
       if (first) {
@@ -466,9 +480,9 @@ export default function POSTerminal() {
     setShowRecipeError(true);
   };
   
-  const handleSendToKitchen = () => {
+  const handleSendToKitchen = async () => {
     try {
-      applyRecipeDeductionsOrThrow();
+      await applyRecipeDeductionsOrThrow();
 
       upsertActiveOrder({ status: 'sent', sent: true });
 
@@ -478,9 +492,9 @@ export default function POSTerminal() {
     }
   };
   
-  const handlePaymentComplete = (method: PaymentMethod) => {
+  const handlePaymentComplete = async (method: PaymentMethod) => {
     try {
-      applyRecipeDeductionsOrThrow();
+      await applyRecipeDeductionsOrThrow();
 
       const saved = upsertActiveOrder({ status: 'paid', paymentMethod: method, sent: true });
 

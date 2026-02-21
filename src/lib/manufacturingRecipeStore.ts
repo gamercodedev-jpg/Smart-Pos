@@ -191,6 +191,17 @@ export function getManufacturingRecipesSnapshot(): Recipe[] {
   return load();
 }
 
+// Ensure remote recipes are loaded; returns after fetchFromDb completes when possible.
+export async function ensureRecipesLoaded(): Promise<void> {
+  if (isSupabaseConfigured() && supabase) {
+    try {
+      await fetchFromDb();
+    } catch {
+      // ignore
+    }
+  }
+}
+
 export function getManufacturingRecipeById(recipeId: string): Recipe | undefined {
   return load().find((r) => r.id === recipeId);
 }

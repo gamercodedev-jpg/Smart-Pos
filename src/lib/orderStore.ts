@@ -2,6 +2,7 @@ import type { Order, OrderItem, OrderType, PaymentMethod } from '@/types/pos';
 import { enqueueOrder } from '@/lib/offlineOrderQueue';
 import { flushQueuedOrders } from '@/lib/offlineOrderQueue';
 import { isSupabaseConfigured, supabase } from '@/lib/supabaseClient';
+import { ensureRecipesLoaded, getManufacturingRecipesSnapshot } from '@/lib/manufacturingRecipeStore';
 import { logSensitiveAction } from '@/lib/systemAuditLog';
 
 const STORAGE_KEY = 'mthunzi.orders.v1';
@@ -49,9 +50,13 @@ let flushWired = false;
 
 async function sendOrderToSupabase(order: Order) {
   if (!useRemote) return;
+
   const client = supabase!.schema('erp');
 
-  const { error: orderErr } = await client.from('pos_orders').upsert({
+  // Hold remote-generated order id when available (erp or public table may return a different id)
+  let orderIdForRemote: string | undefined = undefined;
+
+  const payloadOrder: any = {
     id: order.id,
     order_no: order.orderNo,
     table_no: order.tableNo ?? null,
@@ -71,31 +76,71 @@ async function sendOrderToSupabase(order: Order) {
     created_at: order.createdAt,
     sent_at: order.sentAt ?? null,
     paid_at: order.paidAt ?? null,
-  });
-  if (orderErr) throw orderErr;
+  };
 
-  // Replace order items (simple & reliable)
-  await client.from('pos_order_items').delete().eq('order_id', order.id);
-  const { error: itemsErr } = await client.from('pos_order_items').insert(
-    order.items.map((it) => ({
-      order_id: order.id,
-      menu_item_id: it.menuItemId,
-      menu_item_code: it.menuItemCode,
-      menu_item_name: it.menuItemName,
-      quantity: it.quantity,
-      unit_price: it.unitPrice,
-      unit_cost: it.unitCost,
-      discount_percent: it.discountPercent ?? null,
-      total: it.total,
-      notes: it.notes ?? null,
-      modifiers: it.modifiers ?? null,
-      is_voided: it.isVoided,
-      void_reason: it.voidReason ?? null,
-      sent_to_kitchen: it.sentToKitchen,
-      created_at: order.createdAt,
-    }))
-  );
-  if (itemsErr) throw itemsErr;
+  // Use the in-memory/local order id directly — we only write `pos_order_items`.
+  const remoteOrderId = order.id;
+  // Prepare items payload
+  const itemsPayload = order.items.map((it) => ({
+    order_id: remoteOrderId,
+    menu_item_id: it.menuItemId,
+    menu_item_code: it.menuItemCode,
+    menu_item_name: it.menuItemName,
+    quantity: it.quantity,
+    unit_price: it.unitPrice,
+    unit_cost: it.unitCost,
+    discount_percent: it.discountPercent ?? null,
+    total: it.total,
+    notes: it.notes ?? null,
+    modifiers: it.modifiers ?? null,
+    is_voided: it.isVoided,
+    void_reason: it.voidReason ?? null,
+    sent_to_kitchen: it.sentToKitchen,
+    created_at: order.createdAt,
+  }));
+
+  // Insert items directly into public.pos_order_items
+  try {
+    // Remove any existing items for this order (best-effort)
+    try {
+      await supabase!.from('pos_order_items').delete().eq('order_id', remoteOrderId);
+    } catch {
+      // ignore
+    }
+    const { data: itemsData, error: itemsError } = await supabase!.from('pos_order_items').insert(itemsPayload).select();
+    if (itemsError) {
+      console.error('[orderStore] failed to insert items into pos_order_items', itemsError);
+      throw itemsError;
+    }
+  } catch (e) {
+    console.error('[orderStore] insert to pos_order_items failed', e);
+    throw e;
+  }
+
+  // Attempt to compute recipe ingredient deductions client-side and call
+  // the atomic array RPC to apply stock deductions and insert ledger rows.
+  try {
+    await ensureRecipesLoaded();
+    const recipes = getManufacturingRecipesSnapshot();
+    // Call per-item RPC to deduct ingredients for each sold menu item.
+    for (const it of order.items) {
+      const match = recipes.find((r) => r.parentItemId === String(it.menuItemId) || String(r.parentItemCode) === String(it.menuItemCode));
+      if (!match) {
+        console.debug('[orderStore] no recipe found for item', it.menuItemId, it.menuItemCode);
+        continue;
+      }
+
+      try {
+        const { data: rpcData, error: rpcErr } = await supabase!.rpc('handle_order_stock_deduction', { p_menu_item_id: it.menuItemId, p_qty_sold: it.quantity });
+        if (rpcErr) console.warn('[orderStore] handle_order_stock_deduction rpc failed for', it.menuItemId, rpcErr);
+        else console.debug('[orderStore] handle_order_stock_deduction result', rpcData);
+      } catch (e) {
+        console.warn('[orderStore] deduction rpc exception for', it.menuItemId, e);
+      }
+    }
+  } catch (e) {
+    console.warn('[orderStore] deduction processing error', e);
+  }
 }
 
 async function flushQueueIfPossible() {
@@ -152,7 +197,6 @@ export function upsertOrder(order: Order) {
     // ignore
   }
 }
-
 export function addOrder(params: {
   staffId: string;
   staffName: string;

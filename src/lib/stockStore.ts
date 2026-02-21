@@ -313,6 +313,94 @@ export function applyStockDeductions(deductions: Array<{ itemId: string; qty: nu
   return { ok: true, results };
 }
 
+// Attempt to apply deductions on the remote DB when Supabase is configured.
+// Falls back to local `applyStockDeductions` behavior if remote operations fail.
+export async function deductStockItemsRemote(deductions: Array<{ itemId: string; qty: number }>):
+  Promise<
+    | { ok: true; results: Array<{ itemId: string; before: number; after: number; unitCost: number }> }
+    | { ok: false; insufficient: Array<{ itemId: string; requiredQty: number; onHandQty: number }> }
+  > {
+  if (!deductions.length) return { ok: true, results: [] };
+
+  // If Supabase isn't configured, just perform local deduction synchronously.
+  if (!isSupabaseConfigured() || !supabase) {
+    return applyStockDeductions(deductions);
+  }
+
+  try {
+    // Try server-side atomic RPC first (preferred). Pass JSON array of { itemId, qty }.
+    try {
+      console.debug('[stockStore] calling RPC handle_stock_deductions', { deductions });
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('handle_stock_deductions', { p_deductions: JSON.stringify(deductions) });
+      if (rpcErr) {
+        console.warn('[stockStore] RPC handle_stock_deductions failed', rpcErr);
+      } else if (rpcData && (rpcData as any).ok === true) {
+        console.debug('[stockStore] RPC succeeded', rpcData);
+        // Refresh local cache
+        try { await fetchFromDb(); } catch { /* ignore */ }
+        return { ok: true, results: (rpcData as any).results ?? [] } as any;
+      } else if (rpcData && (rpcData as any).ok === false) {
+        // RPC returned insufficiency info
+        console.warn('[stockStore] RPC reported insufficient stock', rpcData);
+        return { ok: false, insufficient: (rpcData as any).insufficient ?? [] } as any;
+      }
+    } catch (e) {
+      console.warn('[stockStore] handle_stock_deductions RPC call threw', e);
+      // fallthrough to previous multi-step approach
+    }
+
+    const ids = deductions.map((d) => d.itemId);
+    console.debug('[stockStore] attempting remote deduction (multi-step) for', { deductions, ids });
+    const { data, error } = await supabase.from('stock_items').select('id,current_stock,current_cost').in('id', ids as string[]);
+    if (error || !data) {
+      console.warn('[stockStore] failed to fetch remote stock items, falling back to local', error);
+      return applyStockDeductions(deductions);
+    }
+
+    console.debug('[stockStore] fetched remote stock rows', data);
+
+    const byId = new Map((data as any[]).map((r) => [String(r.id), r] as const));
+
+    const insufficient: Array<{ itemId: string; requiredQty: number; onHandQty: number }> = [];
+    for (const d of deductions) {
+      const row = byId.get(d.itemId);
+      const onHand = row && typeof row.current_stock === 'number' ? row.current_stock : NaN;
+      const qty = Number.isFinite(d.qty) ? d.qty : 0;
+      if (!row || !Number.isFinite(onHand)) continue;
+      if (qty > onHand + 1e-9) insufficient.push({ itemId: d.itemId, requiredQty: qty, onHandQty: onHand });
+    }
+    if (insufficient.length) return { ok: false, insufficient };
+
+    // Apply updates serially. Prefer a DB-side RPC/transaction in production.
+    const results: Array<{ itemId: string; before: number; after: number; unitCost: number }> = [];
+    for (const d of deductions) {
+      const row = byId.get(d.itemId);
+      if (!row) continue;
+      const before = typeof row.current_stock === 'number' ? row.current_stock : 0;
+      const after = Math.round((before - d.qty + Number.EPSILON) * 100) / 100;
+      const unitCost = typeof row.current_cost === 'number' ? row.current_cost : 0;
+
+      const { data: updData, error: uErr, status: updStatus } = await supabase.from('stock_items').update({ current_stock: after }).eq('id', d.itemId).select('id,current_stock');
+      if (uErr) {
+        console.warn('[stockStore] remote update failed for', d.itemId, { status: updStatus, error: uErr });
+        // If a remote update fails, abort and fallback to local synchronous deduction
+        return applyStockDeductions(deductions);
+      }
+      console.debug('[stockStore] remote update succeeded', { itemId: d.itemId, before, after, updData });
+
+      results.push({ itemId: d.itemId, before, after, unitCost });
+    }
+
+    // Refresh local cache from DB to stay in sync
+    try { await fetchFromDb(); } catch { /* ignore */ }
+
+    return { ok: true, results };
+  } catch (err) {
+    console.warn('[stockStore] remote deduction failed, falling back to local', err);
+    return applyStockDeductions(deductions);
+  }
+}
+
 function syncFinishedGoodCostToPosByCode(code: string, unitCost: number) {
   try {
     const items = getPosMenuItems();
