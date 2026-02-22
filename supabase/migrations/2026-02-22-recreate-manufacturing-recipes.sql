@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS public.manufacturing_recipe_ingredients (
   manufacturing_recipe_id uuid NOT NULL REFERENCES public.manufacturing_recipes(id) ON DELETE CASCADE,
   stock_item_id uuid NOT NULL REFERENCES public.stock_items(id) ON DELETE RESTRICT,
   quantity_used numeric DEFAULT 0,
+  unit text DEFAULT 'each',
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now()
 );

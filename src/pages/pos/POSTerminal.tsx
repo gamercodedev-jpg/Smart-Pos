@@ -397,7 +397,7 @@ export default function POSTerminal() {
     const recipes = getManufacturingRecipesSnapshot();
     const recipeByCode = new Map(recipes.map((r) => [String(r.parentItemCode), r] as const));
 
-    const byItemId = new Map<string, number>();
+    const byItemId = new Map<string, { qty: number; unit?: string }>();
     const missingRecipeForMenuItemIds: string[] = [];
     const missingStockItemIds: string[] = [];
 
@@ -418,7 +418,8 @@ export default function POSTerminal() {
 
       // Prefer selling from finished goods if they exist and are available.
       if (fg && Number.isFinite(fg.currentStock) && fg.currentStock >= qty - 1e-9) {
-        byItemId.set(fgId, round2((byItemId.get(fgId) ?? 0) + qty));
+        const prev = byItemId.get(fgId);
+        byItemId.set(fgId, { qty: round2((prev?.qty ?? 0) + qty), unit: prev?.unit });
         continue;
       }
 
@@ -433,7 +434,10 @@ export default function POSTerminal() {
       for (const ing of recipe.ingredients) {
         const requiredQty = round2((Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0) * multiplier);
         if (requiredQty <= 0) continue;
-        byItemId.set(ing.ingredientId, round2((byItemId.get(ing.ingredientId) ?? 0) + requiredQty));
+        const prev = byItemId.get(ing.ingredientId);
+        // prefer explicit per-ingredient textual unit when available
+        const unitText = (ing as any).unit ?? prev?.unit;
+        byItemId.set(ing.ingredientId, { qty: round2((prev?.qty ?? 0) + requiredQty), unit: unitText });
       }
     }
 
@@ -441,7 +445,11 @@ export default function POSTerminal() {
       throw new RecipeIncompleteError(missingRecipeForMenuItemIds[0]!, ['NO_MANUFACTURING_RECIPE']);
     }
 
-    const deductions = Array.from(byItemId.entries()).map(([itemId, qty]) => ({ itemId, qty }));
+    const deductions = Array.from(byItemId.entries()).map(([itemId, info]) => {
+      const out: any = { itemId, qty: info.qty };
+      if (info.unit) out.unit = info.unit;
+      return out;
+    });
 
     for (const d of deductions) {
       if (!getStockItemById(d.itemId)) missingStockItemIds.push(d.itemId);

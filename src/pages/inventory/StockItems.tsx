@@ -65,6 +65,7 @@ export default function StockItems() {
     currentCost: '',
     currentStock: '',
     reorderLevel: '',
+    itemsPerPack: '',
   });
   const [isSaving, setIsSaving] = useState(false);
 
@@ -199,7 +200,7 @@ export default function StockItems() {
   };
 
   const toCsv = () => {
-    const headers = ['Code', 'Name', 'Department', 'Supplier', 'Unit', 'Lowest', 'Highest', 'Current', 'Stock', 'Value'];
+    const headers = ['Code', 'Name', 'Category', 'Supplier', 'Unit', 'Lowest Cost', 'Highest Cost', 'Current Price', 'Stock Level', 'Value'];
     const lines = exportRows.map(r => [
       r.code,
       r.name,
@@ -252,13 +253,13 @@ export default function StockItems() {
         <thead><tr>
           <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Code</th>
           <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Name</th>
-          <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Department</th>
+          <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Category</th>
           <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Supplier</th>
           <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Unit</th>
-          <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Lowest</th>
-          <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Highest</th>
-          <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Current</th>
-          <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Stock</th>
+          <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Lowest Cost</th>
+          <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Highest Cost</th>
+          <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Current Price</th>
+          <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Stock Level</th>
           <th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;">Value</th>
         </tr></thead>
         <tbody>${rowsHtml}</tbody>
@@ -301,6 +302,26 @@ export default function StockItems() {
     }
     return { status: 'positive' as const, label: 'In Stock' };
   };
+
+  const mapUnitTypeToUnit = (u: UnitType | undefined): string => {
+    switch (u) {
+      case 'KG': return 'kg';
+      case 'LTRS': return 'l';
+      case 'PACK': return 'pack';
+      case 'EACH':
+      default:
+        return 'each';
+    }
+  };
+
+  const formatNumberTrim = (n: number) => {
+    if (!isFinite(n)) return '0';
+    // show up to 2 decimals but trim trailing zeros and the dot if unnecessary
+    const s = n.toFixed(2);
+    return s.replace(/\.00$/, '').replace(/(\.[0-9])0$/, '$1');
+  };
+
+  const formatStockLevel = (n: number, ut: UnitType) => `${formatNumberTrim(n)} ${mapUnitTypeToUnit(ut)}`;
 
   return (
     <div>
@@ -380,14 +401,71 @@ export default function StockItems() {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="stock">Current Stock</Label>
-                    <Input id="stock" type="number" step="0.01" placeholder="0.00" value={addForm.currentStock} onChange={e => setAddForm(f => ({ ...f, currentStock: e.target.value }))} />
+                    {/* Dynamic label/placeholder based on unitType */}
+                    {(() => {
+                      const ut = String(addForm.unitType || '').toUpperCase();
+                      if (ut === 'KG' || ut === 'LTRS') {
+                        return (
+                          <>
+                            <Label htmlFor="stock">Current Stock (Total {ut === 'KG' ? 'KG' : 'L' })</Label>
+                            <Input id="stock" type="number" step="0.01" placeholder="e.g., 50.00" value={addForm.currentStock} onChange={e => setAddForm(f => ({ ...f, currentStock: e.target.value }))} />
+                          </>
+                        );
+                      }
+                      if (ut === 'PACK') {
+                        return (
+                          <>
+                            <Label htmlFor="stock">Number of Packs</Label>
+                            <Input id="stock" type="number" step="1" placeholder="e.g., 10" value={addForm.currentStock} onChange={e => setAddForm(f => ({ ...f, currentStock: e.target.value }))} />
+                          </>
+                        );
+                      }
+                      // EACH or default
+                      return (
+                        <>
+                          <Label htmlFor="stock">Current Stock (Units)</Label>
+                          <Input id="stock" type="number" step="1" placeholder="e.g., 10" value={addForm.currentStock} onChange={e => setAddForm(f => ({ ...f, currentStock: e.target.value }))} />
+                        </>
+                      );
+                    })()}
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="reorder">Reorder Level</Label>
-                    <Input id="reorder" type="number" step="0.01" placeholder="0.00" value={addForm.reorderLevel} onChange={e => setAddForm(f => ({ ...f, reorderLevel: e.target.value }))} />
+                    {(() => {
+                      const ut = String(addForm.unitType || '').toUpperCase();
+                      if (ut === 'KG' || ut === 'LTRS') {
+                        return (
+                          <>
+                            <Label htmlFor="reorder">Reorder Level (Total {ut === 'KG' ? 'KG' : 'L'})</Label>
+                            <Input id="reorder" type="number" step="0.01" placeholder="e.g., 20.00" value={addForm.reorderLevel} onChange={e => setAddForm(f => ({ ...f, reorderLevel: e.target.value }))} />
+                          </>
+                        );
+                      }
+                      if (ut === 'PACK') {
+                        return (
+                          <>
+                            <Label htmlFor="reorder">Reorder Level (Packs)</Label>
+                            <Input id="reorder" type="number" step="1" placeholder="e.g., 2" value={addForm.reorderLevel} onChange={e => setAddForm(f => ({ ...f, reorderLevel: e.target.value }))} />
+                          </>
+                        );
+                      }
+                      return (
+                        <>
+                          <Label htmlFor="reorder">Reorder Level (Units)</Label>
+                          <Input id="reorder" type="number" step="1" placeholder="e.g., 5" value={addForm.reorderLevel} onChange={e => setAddForm(f => ({ ...f, reorderLevel: e.target.value }))} />
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
+                {/* Items per Pack and calculation summary for PACK */}
+                {String(addForm.unitType || '').toUpperCase() === 'PACK' ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="itemsPerPack">Items per Pack</Label>
+                    <Input id="itemsPerPack" type="number" step="1" placeholder="e.g., 12" value={addForm.itemsPerPack} onChange={e => setAddForm(f => ({ ...f, itemsPerPack: e.target.value }))} />
+                    <div className="text-sm text-muted-foreground">Calculation Summary:</div>
+                    <div className="rounded-md border p-2 bg-background text-sm">System will record: <strong>{addForm.currentStock || 0}</strong> × <strong>{addForm.itemsPerPack || 0}</strong> = <strong>{(parseFloat(addForm.currentStock || '0') * parseFloat(addForm.itemsPerPack || '0')) || 0}</strong> EACH</div>
+                  </div>
+                ) : null}
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setIsAddDialogOpen(false)} disabled={isSaving}>
@@ -396,12 +474,40 @@ export default function StockItems() {
                 <Button
                   onClick={async () => {
                     setIsSaving(true);
-                    const { code, name, departmentId, unitType, lowestCost, highestCost, currentCost, currentStock, reorderLevel } = addForm;
+                    const { code, name, departmentId, unitType, lowestCost, highestCost, currentCost, currentStock, reorderLevel, itemsPerPack } = addForm;
                     if (!code || !name || !departmentId || !unitType) {
                       toast({ title: 'Missing fields', description: 'Please fill all required fields.' });
                       setIsSaving(false);
                       return;
                     }
+
+                    // For PACK: itemsPerPack is required and we store total units in DB
+                    const ut = String(unitType || '').toUpperCase();
+                    if (ut === 'PACK' && (!itemsPerPack || Number(itemsPerPack) <= 0)) {
+                      toast({ title: 'Missing field', description: 'Please enter Items per Pack.' });
+                      setIsSaving(false);
+                      return;
+                    }
+
+                    // Compute the DB values from UI inputs
+                    let dbCurrentStock = 0;
+                    let dbReorder = undefined as number | undefined;
+                    const rawCurrent = parseFloat(currentStock || '0');
+                    const rawReorder = parseFloat(reorderLevel || '0');
+
+                    if (ut === 'PACK') {
+                      const perPack = parseFloat(itemsPerPack || '0');
+                      dbCurrentStock = (isFinite(rawCurrent) ? rawCurrent : 0) * (isFinite(perPack) ? perPack : 0);
+                      dbReorder = isFinite(rawReorder) ? rawReorder * (isFinite(perPack) ? perPack : 0) : undefined;
+                    } else if (ut === 'KG' || ut === 'LTRS') {
+                      dbCurrentStock = isFinite(rawCurrent) ? rawCurrent : 0; // allow decimals
+                      dbReorder = isFinite(rawReorder) ? rawReorder : undefined;
+                    } else {
+                      // EACH and default: store integer units
+                      dbCurrentStock = Math.round(isFinite(rawCurrent) ? rawCurrent : 0);
+                      dbReorder = isFinite(rawReorder) ? Math.round(rawReorder) : undefined;
+                    }
+
                     const newItem: StockItem = {
                       id: uuidv4(),
                       code,
@@ -411,14 +517,14 @@ export default function StockItems() {
                       lowestCost: parseFloat(lowestCost) || 0,
                       highestCost: parseFloat(highestCost) || 0,
                       currentCost: parseFloat(currentCost) || 0,
-                      currentStock: parseFloat(currentStock) || 0,
-                      reorderLevel: reorderLevel ? parseFloat(reorderLevel) : undefined,
+                      currentStock: dbCurrentStock,
+                      reorderLevel: dbReorder,
                     };
                     try {
                       const { addStockItem } = await import('@/lib/stockStore');
                       await addStockItem(newItem);
                       setIsAddDialogOpen(false);
-                      setAddForm({ code: '', name: '', departmentId: '', unitType: '', lowestCost: '', highestCost: '', currentCost: '', currentStock: '', reorderLevel: '' });
+                      setAddForm({ code: '', name: '', departmentId: '', unitType: '', lowestCost: '', highestCost: '', currentCost: '', currentStock: '', reorderLevel: '', itemsPerPack: '' });
                       toast({ title: 'Item added', description: `${name} was added to inventory.` });
                     } catch (err) {
                       toast({ title: 'Error', description: 'Failed to add item.' });
@@ -573,13 +679,13 @@ export default function StockItems() {
             <TableRow>
               <TableHead className="w-[80px]">Code</TableHead>
               <TableHead>Name</TableHead>
-              <TableHead>Department</TableHead>
+              <TableHead>Category</TableHead>
               <TableHead>Supplier</TableHead>
               <TableHead className="w-[60px]">Unit</TableHead>
-              <TableHead className="text-right">Lowest</TableHead>
-              <TableHead className="text-right">Highest</TableHead>
-              <TableHead className="text-right">Current</TableHead>
-              <TableHead className="text-right">Stock</TableHead>
+              <TableHead className="text-right">Lowest Cost</TableHead>
+              <TableHead className="text-right">Highest Cost</TableHead>
+              <TableHead className="text-right">Current Price</TableHead>
+              <TableHead className="text-right">Stock Level</TableHead>
               <TableHead className="text-right">Value</TableHead>
               <TableHead>Status</TableHead>
             </TableRow>
@@ -632,7 +738,7 @@ export default function StockItems() {
                     <NumericCell value={item.currentCost} prefix="K " />
                   </TableCell>
                   <TableCell className="text-right">
-                    <NumericCell value={item.currentStock} decimals={2} />
+                    <div className="font-medium">{formatStockLevel(item.currentStock, item.unitType)}</div>
                   </TableCell>
                   <TableCell className="text-right">
                     <NumericCell value={stockValue} prefix="K " />
@@ -649,7 +755,7 @@ export default function StockItems() {
                       onClick={e => {
                         e.stopPropagation();
                         setEditItemId(item.id);
-                        setEditForm({ ...item });
+                        setEditForm({ ...item, itemsPerPack: (item as any).itemsPerPack ?? '' });
                         setIsEditDialogOpen(true);
                       }}
                     >
@@ -746,21 +852,75 @@ export default function StockItems() {
                               </div>
                               <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-2">
-                                  <Label htmlFor="edit-stock">Current Stock</Label>
-                                  <Input id="edit-stock" type="number" step="0.01" value={editForm.currentStock} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} />
+                                  {(() => {
+                                    const ut = String(editForm.unitType || '').toUpperCase();
+                                    if (ut === 'KG' || ut === 'LTRS') {
+                                      return (
+                                        <>
+                                          <Label htmlFor="edit-stock">Current Stock (Total {ut === 'KG' ? 'KG' : 'L'})</Label>
+                                          <Input id="edit-stock" type="number" step="0.01" placeholder="e.g., 50.00" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} />
+                                        </>
+                                      );
+                                    }
+                                    if (ut === 'PACK') {
+                                      return (
+                                        <>
+                                          <Label htmlFor="edit-stock">Number of Packs</Label>
+                                          <Input id="edit-stock" type="number" step="1" placeholder="e.g., 10" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} />
+                                        </>
+                                      );
+                                    }
+                                    return (
+                                      <>
+                                        <Label htmlFor="edit-stock">Current Stock (Units)</Label>
+                                        <Input id="edit-stock" type="number" step="1" placeholder="e.g., 10" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} />
+                                      </>
+                                    );
+                                  })()}
                                 </div>
                                 <div className="space-y-2">
-                                  <Label htmlFor="edit-reorder">Reorder Level</Label>
-                                  <Input id="edit-reorder" type="number" step="0.01" value={editForm.reorderLevel} onChange={e => setEditForm(f => ({ ...f, reorderLevel: e.target.value }))} />
+                                  {(() => {
+                                    const ut = String(editForm.unitType || '').toUpperCase();
+                                    if (ut === 'KG' || ut === 'LTRS') {
+                                      return (
+                                        <>
+                                          <Label htmlFor="edit-reorder">Reorder Level (Total {ut === 'KG' ? 'KG' : 'L'})</Label>
+                                          <Input id="edit-reorder" type="number" step="0.01" placeholder="e.g., 20.00" value={String(editForm.reorderLevel ?? '')} onChange={e => setEditForm(f => ({ ...f, reorderLevel: e.target.value }))} />
+                                        </>
+                                      );
+                                    }
+                                    if (ut === 'PACK') {
+                                      return (
+                                        <>
+                                          <Label htmlFor="edit-reorder">Reorder Level (Packs)</Label>
+                                          <Input id="edit-reorder" type="number" step="1" placeholder="e.g., 2" value={String(editForm.reorderLevel ?? '')} onChange={e => setEditForm(f => ({ ...f, reorderLevel: e.target.value }))} />
+                                        </>
+                                      );
+                                    }
+                                    return (
+                                      <>
+                                        <Label htmlFor="edit-reorder">Reorder Level (Units)</Label>
+                                        <Input id="edit-reorder" type="number" step="1" placeholder="e.g., 5" value={String(editForm.reorderLevel ?? '')} onChange={e => setEditForm(f => ({ ...f, reorderLevel: e.target.value }))} />
+                                      </>
+                                    );
+                                  })()}
                                 </div>
                               </div>
+                              {String(editForm.unitType || '').toUpperCase() === 'PACK' ? (
+                                <div className="space-y-2">
+                                  <Label htmlFor="edit-itemsPerPack">Items per Pack</Label>
+                                  <Input id="edit-itemsPerPack" type="number" step="1" placeholder="e.g., 12" value={String((editForm as any).itemsPerPack ?? '')} onChange={e => setEditForm(f => ({ ...f, itemsPerPack: e.target.value }))} />
+                                  <div className="text-sm text-muted-foreground">Calculation Summary:</div>
+                                  <div className="rounded-md border p-2 bg-background text-sm">System will record: <strong>{String(editForm.currentStock ?? 0)}</strong> × <strong>{String((editForm as any).itemsPerPack ?? 0)}</strong> = <strong>{(parseFloat(String(editForm.currentStock ?? '0')) * parseFloat(String((editForm as any).itemsPerPack ?? '0'))) || 0}</strong> EACH</div>
+                                </div>
+                              ) : null}
                             </div>
                           )}
                           <DialogFooter>
                             <Button variant="outline" onClick={() => setIsEditDialogOpen(false)} disabled={isEditSaving}>
                               Cancel
                             </Button>
-                            <Button
+                                <Button
                               onClick={async () => {
                                 setIsEditSaving(true);
                                 if (!editForm.code || !editForm.name || !editForm.departmentId || !editForm.unitType) {
@@ -770,13 +930,40 @@ export default function StockItems() {
                                 }
                                 try {
                                   const { updateStockItem } = await import('@/lib/stockStore');
+                                  // Convert UI inputs into DB values similar to Add dialog
+                                  const { lowestCost, highestCost, currentCost, currentStock, reorderLevel } = editForm as any;
+                                  const ut = String(editForm.unitType || '').toUpperCase();
+                                  const rawCurrent = parseFloat(String(currentStock || '0'));
+                                  const rawReorder = parseFloat(String(reorderLevel || '0'));
+                                  const perPack = parseFloat(String((editForm as any).itemsPerPack || '0'));
+
+                                  let dbCurrentStock = 0;
+                                  let dbReorder = undefined as number | undefined;
+
+                                  if (ut === 'PACK') {
+                                    if (perPack > 0) {
+                                      dbCurrentStock = (isFinite(rawCurrent) ? rawCurrent : 0) * perPack;
+                                      dbReorder = isFinite(rawReorder) ? rawReorder * perPack : undefined;
+                                    } else {
+                                      // No itemsPerPack provided — assume user supplied total units already
+                                      dbCurrentStock = isFinite(rawCurrent) ? rawCurrent : 0;
+                                      dbReorder = isFinite(rawReorder) ? rawReorder : undefined;
+                                    }
+                                  } else if (ut === 'KG' || ut === 'LTRS') {
+                                    dbCurrentStock = isFinite(rawCurrent) ? rawCurrent : 0;
+                                    dbReorder = isFinite(rawReorder) ? rawReorder : undefined;
+                                  } else {
+                                    dbCurrentStock = Math.round(isFinite(rawCurrent) ? rawCurrent : 0);
+                                    dbReorder = isFinite(rawReorder) ? Math.round(rawReorder) : undefined;
+                                  }
+
                                   await updateStockItem(editItemId, {
                                     ...editForm,
-                                    lowestCost: parseFloat(editForm.lowestCost) || 0,
-                                    highestCost: parseFloat(editForm.highestCost) || 0,
-                                    currentCost: parseFloat(editForm.currentCost) || 0,
-                                    currentStock: parseFloat(editForm.currentStock) || 0,
-                                    reorderLevel: editForm.reorderLevel ? parseFloat(editForm.reorderLevel) : undefined,
+                                    lowestCost: parseFloat(String(lowestCost)) || 0,
+                                    highestCost: parseFloat(String(highestCost)) || 0,
+                                    currentCost: parseFloat(String(currentCost)) || 0,
+                                    currentStock: dbCurrentStock,
+                                    reorderLevel: dbReorder,
                                   });
                                   setIsEditDialogOpen(false);
                                   toast({ title: 'Item updated', description: `${editForm.name} was updated.` });

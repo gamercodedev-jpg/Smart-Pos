@@ -40,7 +40,7 @@ async function fetchFromDb() {
       try {
         const { data: ingRows, error: ingErr } = await supabase
           .from('manufacturing_recipe_ingredients')
-          .select('quantity_used, stock_item_id, stock_items(id,name,item_code,unit,cost_per_unit)')
+          .select('quantity_used, unit, stock_item_id, stock_items(id,name,item_code,unit,cost_per_unit)')
           .eq('manufacturing_recipe_id', m.id);
 
         if (ingErr) {
@@ -49,15 +49,27 @@ async function fetchFromDb() {
           for (const r of (ingRows ?? []) as any[]) {
             const si = r.stock_items;
             const stock = stockSnapshot.find((s) => s.id === (si?.id ?? r.stock_item_id));
+            // Determine unit string stored on the ingredient row or fallback to stock unit
+            const unitStr = (r.unit ?? si?.unit ?? stock?.unitType ?? 'each').toString();
+            // Map textual unit to UnitType used by frontend
+            const mapUnitToUnitType = (u: string): UnitType => {
+              const uu = String(u ?? '').toLowerCase();
+              if (uu === 'g' || uu === 'kg') return 'KG';
+              if (uu === 'ml' || uu === 'l' || uu === 'ltr' || uu === 'ltrs') return 'LTRS';
+              if (uu === 'pack') return 'PACK';
+              return 'EACH';
+            };
+
             ingredients.push({
               id: safeId('ri'),
               ingredientId: si?.id ?? r.stock_item_id,
               ingredientCode: si?.item_code ?? (stock?.code ?? ''),
               ingredientName: si?.name ?? (stock?.name ?? ''),
               requiredQty: Number(r.quantity_used) ?? 0,
-              unitType: (si?.unit ?? (stock?.unitType ?? 'EACH')) as UnitType,
+              unit: unitStr?.toString(),
+              unitType: mapUnitToUnitType(unitStr) as UnitType,
               unitCost: Number(si?.cost_per_unit ?? stock?.currentCost ?? 0),
-            });
+            } as any);
           }
         }
       } catch (e) {
@@ -137,10 +149,35 @@ function safeId(prefix: string) {
 
 function recomputeRecipe(recipe: Recipe, stockItems: StockItem[]): Recipe {
   const byId = new Map(stockItems.map((s) => [s.id, s] as const));
+  // helper: map UnitType -> textual unit
+  const mapUnitTypeToUnit = (u: UnitType | undefined): string => {
+    switch (u) {
+      case 'KG': return 'kg';
+      case 'LTRS': return 'l';
+      case 'PACK': return 'pack';
+      case 'EACH':
+      default:
+        return 'each';
+    }
+  };
+
+  const adjustUnitCost = (stockCost: number, stockUnitType: UnitType | undefined, ingredientUnitText?: string) => {
+    const ing = String(ingredientUnitText ?? '').toLowerCase();
+    const su = stockUnitType;
+    if (!isFinite(stockCost)) return 0;
+    if (ing === 'g' && su === 'KG') return stockCost / 1000;
+    if (ing === 'kg' && su === 'KG') return stockCost;
+    if (ing === 'ml' && su === 'LTRS') return stockCost / 1000;
+    if ((ing === 'l' || ing === 'ltr' || ing === 'ltrs') && su === 'LTRS') return stockCost;
+    // default: no conversion
+    return stockCost;
+  };
 
   const nextIngredients: RecipeIngredient[] = recipe.ingredients.map((i) => {
     const s = byId.get(i.ingredientId);
-    const unitCost = s ? s.currentCost : i.unitCost;
+    // allow an explicit textual unit on the ingredient (e.g., 'g','ml')
+    const ingUnitText = (i as any).unit ?? (s ? ((s as any).unit ?? mapUnitTypeToUnit(s?.unitType)) : undefined);
+    const unitCost = s ? adjustUnitCost(s.currentCost, s?.unitType, ingUnitText) : i.unitCost;
     return {
       ...i,
       ingredientCode: s?.code ?? i.ingredientCode,
@@ -333,7 +370,24 @@ export async function upsertManufacturingRecipe(input: Omit<Recipe, 'id' | 'tota
         }
 
         if (computed.ingredients.length) {
-          const rows = computed.ingredients.map((ing) => ({ manufacturing_recipe_id: metaId, stock_item_id: ing.ingredientId, quantity_used: ing.requiredQty }));
+          const mapUnitTypeToUnit = (u: UnitType | undefined): string => {
+            switch (u) {
+              case 'KG': return 'kg';
+              case 'LTRS': return 'l';
+              case 'PACK': return 'pack';
+              case 'EACH':
+              default:
+                return 'each';
+            }
+          };
+
+          const rows = computed.ingredients.map((ing) => {
+            // Try to prefer an explicit unit specified on the ingredient, then the stock item's native unit
+            const stock = stockItems.find(s => s.id === ing.ingredientId);
+            const explicitUnit = (ing as any).unit as string | undefined;
+            const unit = explicitUnit ?? ((stock as any)?.unit ?? mapUnitTypeToUnit(stock?.unitType));
+            return { manufacturing_recipe_id: metaId, stock_item_id: ing.ingredientId, quantity_used: ing.requiredQty, unit };
+          });
           try {
             const { data: insData, error: insErr, status: insStatus } = await supabase.from('manufacturing_recipe_ingredients').insert(rows).select();
             if (insErr) console.warn('Failed to insert manufacturing_recipe_ingredients', { status: insStatus, error: insErr, data: insData });

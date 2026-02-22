@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Plus, Search, Edit, Trash2, Check, ChevronsUpDown } from 'lucide-react';
 import { PageHeader, DataTableWrapper, NumericCell } from '@/components/common/PageComponents';
 import { Button } from '@/components/ui/button';
@@ -12,10 +13,23 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient';
 import type { DepartmentId, Recipe, RecipeIngredient, StockItem, UnitType } from '@/types';
-import { getManufacturingRecipesSnapshot, subscribeManufacturingRecipes, upsertManufacturingRecipe, deleteManufacturingRecipe } from '@/lib/manufacturingRecipeStore';
+import { getManufacturingRecipesSnapshot, subscribeManufacturingRecipes, upsertManufacturingRecipe, deleteManufacturingRecipe, ensureRecipesLoaded } from '@/lib/manufacturingRecipeStore';
 import { getStockItemsSnapshot, subscribeStockItems } from '@/lib/stockStore';
 import { getPosMenuItemsSnapshot, subscribePosMenu } from '@/lib/posMenuStore';
 import { cn } from '@/lib/utils';
+
+const mapUnitTypeToUnit = (u?: UnitType): string => {
+  switch (u) {
+    case 'KG': return 'kg';
+    case 'LTRS': return 'l';
+    case 'PACK': return 'pack';
+    case 'EACH':
+    default:
+      return 'each';
+  }
+};
+
+const getStockUnit = (s?: StockItem) => ((s as any)?.unit ?? mapUnitTypeToUnit(s?.unitType));
 
 export default function Recipes() {
   const recipes = useSyncExternalStore(subscribeManufacturingRecipes, getManufacturingRecipesSnapshot);
@@ -24,6 +38,7 @@ export default function Recipes() {
   const [searchTerm, setSearchTerm] = useState('');
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const location = useLocation();
 
   const filteredRecipes = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
@@ -42,6 +57,30 @@ export default function Recipes() {
     setEditingId(id);
     setEditorOpen(true);
   };
+
+  // If navigated with state.openRecipeId, open that recipe in the editor
+  useEffect(() => {
+    try {
+      const stateAny: any = (location && (location.state as any)) ?? null;
+      const openRecipeId = stateAny?.openRecipeId;
+      if (!openRecipeId) return;
+
+      // If we already have the recipe loaded, open the editor immediately.
+      const found = recipes.find(r => r.id === openRecipeId);
+      if (found) {
+        setEditingId(openRecipeId);
+        setEditorOpen(true);
+        try { window.history.replaceState({}, ''); } catch {}
+        return;
+      }
+
+      // Otherwise ensure remote recipes are loaded; when `recipes` updates
+      // this effect will run again and open the editor if found.
+      void ensureRecipesLoaded();
+    } catch {
+      // ignore
+    }
+  }, [location, recipes]);
 
   const handleDelete = async (id: string) => {
     try {
@@ -99,7 +138,7 @@ export default function Recipes() {
                     {recipe.ingredients.map((ing) => (
                       <TableRow key={ing.id}>
                         <TableCell>{ing.ingredientName}</TableCell>
-                        <TableCell className="text-right">{ing.requiredQty} {ing.unitType}</TableCell>
+                        <TableCell className="text-right">{ing.requiredQty} {(ing as any).unit ?? mapUnitTypeToUnit(ing.unitType)}</TableCell>
                         <TableCell className="text-right"><NumericCell value={ing.unitCost} prefix="K " /></TableCell>
                         <TableCell className="text-right"><NumericCell value={ing.requiredQty * ing.unitCost} prefix="K " /></TableCell>
                       </TableRow>
@@ -134,6 +173,7 @@ type DraftIngredient = {
   id: string;
   ingredientId: string;
   requiredQty: number;
+  unit?: string;
 };
 
 function safeId(prefix: string) {
@@ -143,11 +183,29 @@ function safeId(prefix: string) {
 
 function computeCosts(params: { draft: { outputQty: number; ingredients: DraftIngredient[] }; stockItems: StockItem[] }) {
   const byId = new Map(params.stockItems.map(s => [s.id, s] as const));
-  const total = params.draft.ingredients.reduce((sum, ing) => {
-    const s = byId.get(ing.ingredientId);
-    const unitCost = s ? s.currentCost : 0;
-    return sum + (Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0) * (Number.isFinite(unitCost) ? unitCost : 0);
-  }, 0);
+    const total = params.draft.ingredients.reduce((sum, ing) => {
+      const s = byId.get(ing.ingredientId);
+      // determine effective unit cost based on per-ingredient unit selection
+      const mapUnitTypeToUnit = (u?: UnitType): string => {
+        switch (u) {
+          case 'KG': return 'kg';
+          case 'LTRS': return 'l';
+          case 'PACK': return 'pack';
+          case 'EACH':
+          default:
+            return 'each';
+        }
+      };
+
+      const ingUnit = (ing as any).unit ?? (s ? ((s as any).unit ?? mapUnitTypeToUnit(s.unitType)) : undefined);
+      let unitCost = s ? s.currentCost : 0;
+      if (s && ingUnit) {
+        const iu = String(ingUnit).toLowerCase();
+        if (iu === 'g' && s.unitType === 'KG') unitCost = s.currentCost / 1000;
+        if (iu === 'ml' && s.unitType === 'LTRS') unitCost = s.currentCost / 1000;
+      }
+      return sum + (Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0) * (Number.isFinite(unitCost) ? unitCost : 0);
+    }, 0);
   const outputQty = params.draft.outputQty > 0 ? params.draft.outputQty : 1;
   const unit = total / outputQty;
   return { totalCost: total, unitCost: unit };
@@ -190,7 +248,17 @@ export function RecipeEditorDialog(props: {
     setFinishedDept((editing?.finishedGoodDepartmentId ?? initialValues?.finishedGoodDepartmentId ?? (departmentsList.length ? departmentsList[0].id : '')) as DepartmentId);
     setOutputQty(editing?.outputQty ?? 1);
     setOutputUnitType((editing?.outputUnitType ?? 'EACH') as UnitType);
-    setIngredients((editing?.ingredients ?? []).map((i) => ({ id: i.id, ingredientId: i.ingredientId, requiredQty: i.requiredQty })));
+    const mapUnitTypeToUnit = (u: UnitType | undefined): string => {
+      switch (u) {
+        case 'KG': return 'kg';
+        case 'LTRS': return 'l';
+        case 'PACK': return 'pack';
+        case 'EACH':
+        default:
+          return 'each';
+      }
+    };
+    setIngredients((editing?.ingredients ?? []).map((i) => ({ id: i.id, ingredientId: i.ingredientId, requiredQty: i.requiredQty, unit: getStockUnit(byId.get(i.ingredientId)) ?? mapUnitTypeToUnit(i.unitType) })));
   }, [open, editing?.id, departmentsList, initialValues?.parentItemCode, initialValues?.parentItemName]);
 
   const nameMatches = useMemo(() => {
@@ -262,7 +330,20 @@ export function RecipeEditorDialog(props: {
       setPickerOpen(false);
       return;
     }
-    setIngredients(prev => [...prev, { id: safeId('ri'), ingredientId: stockItemId, requiredQty: 0 }]);
+    // default unit from the stock item when available
+    const stock = stockItems.find(s => s.id === stockItemId);
+    const mapUnitTypeToUnit = (u: UnitType | undefined): string => {
+      switch (u) {
+        case 'KG': return 'kg';
+        case 'LTRS': return 'l';
+        case 'PACK': return 'pack';
+        case 'EACH':
+        default:
+          return 'each';
+      }
+    };
+    const defaultUnit = getStockUnit(stock) ?? mapUnitTypeToUnit(stock?.unitType);
+    setIngredients(prev => [...prev, { id: safeId('ri'), ingredientId: stockItemId, requiredQty: 0, unit: defaultUnit }]);
     setPickerOpen(false);
   };
 
@@ -276,10 +357,35 @@ export function RecipeEditorDialog(props: {
     if (!trimmedName || !trimmedCode) return;
     if (outputQty <= 0) return;
 
+    // Validation: for KG/LTRS stock items the ingredient must use a mass/liquid unit
+    for (const i of ingredients) {
+      const s = byId.get(i.ingredientId);
+      if (!s) continue;
+      if (s.unitType === 'KG' || s.unitType === 'LTRS') {
+        const ingUnit = (i.unit ?? ((s as any).unit ?? mapUnitTypeToUnit(s.unitType)) ?? '').toString().toLowerCase();
+        const okKg = s.unitType === 'KG' && (ingUnit === 'g' || ingUnit === 'kg');
+        const okLtr = s.unitType === 'LTRS' && (ingUnit === 'ml' || ingUnit === 'l');
+        if (!(okKg || okLtr)) {
+          alert('Please select a mass/liquid unit for this ingredient.');
+          return;
+        }
+      }
+    }
+
     const recipeIngredients: RecipeIngredient[] = ingredients
       .map((i) => {
         const s = byId.get(i.ingredientId);
-        const unitType = (s?.unitType ?? 'EACH') as UnitType;
+        // Determine unitType from the per-ingredient unit selection when present,
+        // otherwise fallback to the stock item's unitType
+        const mapUnitToUnitType = (u?: string): UnitType => {
+          const uu = String(u ?? '').toLowerCase();
+          if (uu === 'g' || uu === 'kg') return 'KG';
+          if (uu === 'ml' || uu === 'l' || uu === 'ltr' || uu === 'ltrs') return 'LTRS';
+          if (uu === 'pack') return 'PACK';
+          return 'EACH';
+        };
+
+        const unitType = i.unit ? mapUnitToUnitType(i.unit) : ((s?.unitType ?? 'EACH') as UnitType);
         return {
           id: i.id,
           ingredientId: i.ingredientId,
@@ -287,8 +393,10 @@ export function RecipeEditorDialog(props: {
           ingredientName: s?.name ?? i.ingredientId,
           requiredQty: Number.isFinite(i.requiredQty) ? i.requiredQty : 0,
           unitType,
+          // preserve the textual unit so the store can persist it to DB
+          ...(i.unit ? { unit: i.unit } : {}),
           unitCost: s?.currentCost ?? 0,
-        };
+        } as any;
       })
       .filter((i) => i.requiredQty > 0);
 
@@ -451,7 +559,14 @@ export function RecipeEditorDialog(props: {
               ) : (
                 ingredients.map((ing) => {
                   const s = byId.get(ing.ingredientId);
-                  const unitCost = s?.currentCost ?? 0;
+                  // compute effective unit cost respecting per-ingredient unit selection
+                  const ingUnit = ing.unit ?? (s ? ((s as any).unit ?? mapUnitTypeToUnit(s.unitType)) : undefined);
+                  let unitCost = s?.currentCost ?? 0;
+                  if (s && ingUnit) {
+                    const iu = String(ingUnit).toLowerCase();
+                    if (iu === 'g' && s.unitType === 'KG') unitCost = (s.currentCost || 0) / 1000;
+                    if (iu === 'ml' && s.unitType === 'LTRS') unitCost = (s.currentCost || 0) / 1000;
+                  }
                   const lineTotal = (Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0) * unitCost;
                   return (
                     <TableRow key={ing.id}>
@@ -459,10 +574,10 @@ export function RecipeEditorDialog(props: {
                         <div className="font-medium">{s?.name ?? ing.ingredientId}</div>
                         <div className="text-xs text-muted-foreground">{s?.code ?? ''}</div>
                       </TableCell>
-                      <TableCell className="text-right">
+                        <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">
                           <Input
-                            className="h-9 w-28 text-right"
+                            className="h-9 w-24 text-right"
                             type="number"
                             min={0}
                             step="0.01"
@@ -472,7 +587,21 @@ export function RecipeEditorDialog(props: {
                               setIngredients(prev => prev.map(p => (p.id === ing.id ? { ...p, requiredQty: Number.isFinite(v) ? v : 0 } : p)));
                             }}
                           />
-                          <span className="text-xs text-muted-foreground">{s?.unitType ?? ''}</span>
+                          <Select value={ing.unit ?? getStockUnit(byId.get(ing.ingredientId))} onValueChange={(v) => setIngredients(prev => prev.map(p => p.id === ing.id ? { ...p, unit: v } : p))}>
+                            <SelectTrigger className="h-9 w-20">
+                              <SelectValue placeholder="unit" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {
+                                // restrict dropdown options to the appropriate base units for this stock item
+                                (() => {
+                                  const stock = s;
+                                  const allowed = stock ? (stock.unitType === 'KG' ? ['g', 'kg'] : stock.unitType === 'LTRS' ? ['ml', 'l'] : stock.unitType === 'PACK' ? ['pack', 'each'] : ['each']) : ['each'];
+                                  return allowed.map(u => <SelectItem key={u} value={u}>{u}</SelectItem>);
+                                })()
+                              }
+                            </SelectContent>
+                          </Select>
                         </div>
                       </TableCell>
                       <TableCell className="text-right"><NumericCell value={unitCost} prefix="K " /></TableCell>

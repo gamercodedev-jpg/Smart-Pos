@@ -1,5 +1,6 @@
 import { useState, useEffect, useSyncExternalStore } from 'react';
 import { PageHeader } from '@/components/common/PageComponents';
+import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Trash2, Plus, Pencil, RotateCcw, Upload, Check, ChevronsUpDown } from 'lucide-react';
 import type { POSCategory, POSMenuItem } from '@/types/pos';
-import { getManufacturingRecipesSnapshot, subscribeManufacturingRecipes } from '@/lib/manufacturingRecipeStore';
+import { getManufacturingRecipesSnapshot, subscribeManufacturingRecipes, upsertManufacturingRecipe, getManufacturingRecipeById } from '@/lib/manufacturingRecipeStore';
 import { getStockItemsSnapshot, subscribeStockItems } from '@/lib/stockStore';
 import { RecipeEditorDialog } from '@/pages/manufacturing/Recipes';
 import { getPosMenuItemsSnapshot, subscribePosMenu } from '@/lib/posMenuStore';
@@ -18,6 +19,7 @@ import { usePosMenu } from '@/hooks/usePosMenu';
 import { deletePosCategory, deletePosMenuItem, resetPosMenuToDefaults, upsertPosCategory, upsertPosMenuItem } from '@/lib/posMenuStore';
 import { useAuth } from '@/contexts/AuthContext';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { toast } from '@/hooks/use-toast';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from '@/components/ui/command';
 import { cn } from '@/lib/utils';
 import React from "react";
@@ -44,6 +46,27 @@ export const MenuManager: React.FC = () => {
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [uploading, setUploading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | undefined>(undefined);
+  const [isRetail, setIsRetail] = useState(false);
+  const [selectedStockId, setSelectedStockId] = useState<string | undefined>(undefined);
+  const [searchStockTerm, setSearchStockTerm] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [recipeModalOpen, setRecipeModalOpen] = useState(false);
+  const [recipeModalMessage, setRecipeModalMessage] = useState<string | null>(null);
+  const [recipeModalRecipeId, setRecipeModalRecipeId] = useState<string | null>(null);
+  const [recipeToOpenId, setRecipeToOpenId] = useState<string | null>(null);
+  const [validationModalOpen, setValidationModalOpen] = useState(false);
+  const [validationMessage, setValidationMessage] = useState<string | null>(null);
+  const validationErrors = React.useMemo(() => {
+    const errs: string[] = [];
+    const name = String(form.name ?? '').trim();
+    const price = Number(form.price ?? 0);
+    if (!name) errs.push('Name is required.');
+    if (!Number.isFinite(price) || price <= 0) errs.push('Price must be a number greater than 0.');
+    if (!((form as any).image)) errs.push('Please upload an image for the menu item (from Storage).');
+    if (isRetail && !selectedStockId) errs.push('Select a stock item when Retail is enabled.');
+    return errs;
+  }, [form, isRetail, selectedStockId]);
+  const navigate = useNavigate();
 
   useEffect(() => {
     let mounted = true;
@@ -151,6 +174,13 @@ export const MenuManager: React.FC = () => {
   }, []);
 
   const handleSave = async () => {
+    // Validate before attempting save
+    if (validationErrors.length) {
+      setValidationMessage(validationErrors.join('\n'));
+      setValidationModalOpen(true);
+      return;
+    }
+    setIsSaving(true);
     // Map small MenuItem -> POSMenuItem shape for store
     const payload: any = {
       id: editing?.id ?? String(Date.now()),
@@ -170,12 +200,49 @@ export const MenuManager: React.FC = () => {
 
     // Require an uploaded image path from storage
     if (!((form as any).image)) {
-      alert('Please upload an image for the menu item (from Storage)');
+      setValidationMessage('Please upload an image for the menu item (from Storage)');
+      setValidationModalOpen(true);
+      setIsSaving(false);
       return;
     }
 
     try {
+      // ensure a code exists for product linking
+      if (!payload.code || !String(payload.code).trim()) payload.code = `SKU-${Date.now().toString().slice(-6)}`;
+
       await upsertPosMenuItem(payload);
+
+      // If this is a retail-ready item, create a simple 1:1 manufacturing recipe linking to selected stock
+      if (isRetail && selectedStockId) {
+        try {
+          const stock = stockItems.find((s) => s.id === selectedStockId);
+          const created = await upsertManufacturingRecipe({
+            parentItemCode: payload.code,
+            parentItemName: payload.name,
+            parentItemId: payload.id,
+            outputQty: 1,
+            outputUnitType: 'EACH',
+            ingredients: [
+              {
+                ingredientId: selectedStockId,
+                requiredQty: 1,
+                ingredientName: stock?.name ?? '',
+              },
+            ],
+          } as any);
+          // Notify user via toast and modal about the auto-created retail recipe
+          try { toast({ title: 'Retail recipe created', description: `Linked to ${stock?.name ?? 'stock item'}` }); } catch {}
+          try {
+            setRecipeModalRecipeId(created?.id ?? null);
+            setRecipeModalMessage(`A retail recipe was automatically created and linked to "${stock?.name ?? 'stock item'}".`);
+            setRecipeModalOpen(true);
+          } catch {}
+        } catch (e) {
+          console.warn('Failed to auto-create retail recipe', e);
+          try { toast({ title: 'Retail recipe failed', description: 'Could not auto-create retail recipe.' }); } catch {}
+        }
+      }
+
       // reflect authoritative snapshot from store
       setItems(getPosMenuItemsSnapshot().map((i) => ({ id: i.id, name: i.name, price: i.price, image: i.image, description: (i as any).description })) as any);
     } catch (err) {
@@ -189,6 +256,10 @@ export const MenuManager: React.FC = () => {
     setShowModal(false);
     setEditing(null);
     setForm({});
+    setIsRetail(false);
+    setSelectedStockId(undefined);
+    setSearchStockTerm('');
+    setIsSaving(false);
   };
 
   const handleDelete = async (id: string) => {
@@ -217,12 +288,30 @@ export const MenuManager: React.FC = () => {
   const openAddModal = () => {
     setEditing(null);
     setForm({});
+    setIsRetail(false);
+    setSelectedStockId(undefined);
     setShowModal(true);
   };
 
   const openEditModal = (item: MenuItem) => {
     setEditing(item);
     setForm(item);
+    // try to detect if a recipe exists linked to this item and prefill retail/stock
+    try {
+      const linked = recipes.find(r => String(r.parentItemCode) === String((item as any).code));
+      if (linked) {
+        setIsRetail(true);
+        // Try to find first ingredient stock item for this recipe
+        const recipe = getManufacturingRecipesSnapshot().find(x => x.id === linked.id);
+        if (recipe && recipe.ingredients && recipe.ingredients.length) setSelectedStockId(recipe.ingredients[0].ingredientId);
+      } else {
+        setIsRetail(false);
+        setSelectedStockId(undefined);
+      }
+    } catch {
+      setIsRetail(false);
+      setSelectedStockId(undefined);
+    }
     setShowModal(true);
   };
 
@@ -295,42 +384,82 @@ export const MenuManager: React.FC = () => {
       </div>
 
       <Dialog open={showModal} onOpenChange={setShowModal}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>{editing ? 'Edit Menu Item' : 'Add Menu Item'}</DialogTitle>
-            <DialogDescription className="sr-only">Add or edit a menu item</DialogDescription>
+        <DialogContent className="max-w-lg max-h-[80vh] overflow-auto">
+          <DialogHeader className="flex items-start justify-between gap-4">
+            <div>
+              <DialogTitle>{editing ? 'Edit Menu Item' : 'Add Menu Item'}</DialogTitle>
+              <DialogDescription className="sr-only">Add or edit a menu item</DialogDescription>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Switch checked={isRetail} onCheckedChange={(v: any) => setIsRetail(Boolean(v))} />
+                <div className="text-sm">Retail Item? (Link to Ready-to-Sell Stock) </div>
+              </div>
+            </div>
           </DialogHeader>
 
           <div className="grid gap-3">
-            <div className="space-y-1">
-              <Label>Link to Recipe (optional)</Label>
-              <Select value={(form as any).code ?? '__none__'} onValueChange={(v) => {
-                // treat sentinel '__none__' as clearing the selection
-                if (v === '__none__') {
-                  setForm({ ...form, code: '' });
-                  return;
-                }
-                // find recipe and autofill name/code when selected
-                const sel = recipes.find(r => r.parentItemCode === v || r.id === v);
-                if (sel) setForm({ ...form, name: sel.parentItemName, code: sel.parentItemCode });
-                else setForm({ ...form, code: v });
-              }}>
-                <SelectTrigger>
-                  <SelectValue placeholder="(none)" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">(none)</SelectItem>
-                  {recipes.map((r) => (
-                    <SelectItem key={r.id} value={r.parentItemCode || r.id}>{r.parentItemName} — {r.parentItemCode}</SelectItem>
+            {isRetail ? (
+              <div className="relative">
+                <Label>Which stock item?</Label>
+                <input
+                  className="w-full px-3 py-2 rounded border bg-background text-sm"
+                  placeholder="Search stock..."
+                  value={searchStockTerm}
+                  onChange={(e) => setSearchStockTerm(e.target.value)}
+                />
+                <div className="absolute z-40 left-0 right-0 bg-card rounded mt-1 shadow max-h-40 overflow-auto">
+                  {stockItems.filter(s => {
+                    if (!searchStockTerm) return true;
+                    const q = searchStockTerm.toLowerCase();
+                    return String(s.name ?? '').toLowerCase().includes(q) || String((s as any).code ?? (s as any).item_code ?? '').toLowerCase().includes(q);
+                  }).slice(0,50).map(s => (
+                    <div key={s.id} className="px-3 py-2 hover:bg-accent cursor-pointer flex items-center justify-between" onClick={() => {
+                      setSelectedStockId(s.id);
+                      setSearchStockTerm(`${s.name} — ${((s as any).code ?? (s as any).item_code ?? s.id)}`);
+                      // When retail is enabled and a stock item is selected, prefill form fields
+                      try {
+                        const suggestedName = s.name ?? '';
+                        const suggestedCode = (s as any).code ?? (s as any).item_code ?? '';
+                        const suggestedPrice = (typeof (s as any).currentCost === 'number' ? (s as any).currentCost : undefined);
+                        setForm(prev => ({ ...prev, name: suggestedName, code: suggestedCode, price: suggestedPrice ?? prev.price, categoryId: (s as any).departmentId ?? prev.categoryId }));
+                      } catch {
+                        // ignore prefill errors
+                      }
+                    }}>
+                      <div className="text-sm">{s.name}</div>
+                      <div className="text-xs text-muted-foreground">{Number(s.currentStock ?? 0).toFixed(2)}</div>
+                    </div>
                   ))}
-                </SelectContent>
-              </Select>
-              {((form.name ?? '').toString().trim() && ((form as any).code ?? '').toString().trim()) ? (
-                <div className="mt-2">
-                  <Button size="sm" variant="outline" onClick={() => setRecipeEditorOpen(true)}><Plus className="h-4 w-4 mr-2" />Add recipe</Button>
                 </div>
-              ) : null}
-            </div>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <Label>Link to Recipe (optional)</Label>
+                <Select value={(form as any).code ?? '__none__'} onValueChange={(v) => {
+                  if (v === '__none__') { setForm({ ...form, code: '' }); return; }
+                  const sel = recipes.find(r => r.parentItemCode === v || r.id === v);
+                  if (sel) setForm({ ...form, name: sel.parentItemName, code: sel.parentItemCode });
+                  else setForm({ ...form, code: v });
+                }}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="(none)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">(none)</SelectItem>
+                    {recipes.map((r) => (
+                      <SelectItem key={r.id} value={r.parentItemCode || r.id}>{r.parentItemName} — {r.parentItemCode}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {((form.name ?? '').toString().trim() && ((form as any).code ?? '').toString().trim()) ? (
+                  <div className="mt-2">
+                    <Button size="sm" variant="outline" onClick={() => setRecipeEditorOpen(true)}><Plus className="h-4 w-4 mr-2" />Add recipe</Button>
+                  </div>
+                ) : null}
+              </div>
+            )}
+
             <div className="space-y-1">
               <Label>Category</Label>
               <Select value={(form as any).categoryId ?? '__none__'} onValueChange={(v) => {
@@ -348,10 +477,12 @@ export const MenuManager: React.FC = () => {
                 </SelectContent>
               </Select>
             </div>
+
             <div className="space-y-1">
               <Label>Name</Label>
               <Input value={form.name ?? ''} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </div>
+
             <div className="space-y-1">
               <Label>Code (optional)</Label>
               <div className="flex gap-2">
@@ -360,12 +491,14 @@ export const MenuManager: React.FC = () => {
               </div>
               <div className="text-sm text-muted-foreground">Optional: add a SKU/code to link to recipes later. Leave empty to add later.</div>
             </div>
+
             <div className="space-y-1">
               <Label>Price</Label>
               <Input type="number" value={form.price ?? 0} onChange={(e) => setForm({ ...form, price: Number(e.target.value) })} />
             </div>
+
             <div className="space-y-1">
-              <Label>Image (upload from Storage)</Label>
+              <Label>Add product item image (upload from Storage)</Label>
               <input type="file" accept="image/*" onChange={async (e) => {
                 const f = e.target.files?.[0];
                 if (!f) return;
@@ -398,6 +531,7 @@ export const MenuManager: React.FC = () => {
                 {previewUrl ? <img src={previewUrl} alt="preview" className="h-24 w-24 object-cover mt-2" /> : null}
               </div>
             </div>
+
             <div className="space-y-1">
               <Label>Description (optional)</Label>
               <Input value={(form as any).description ?? ''} onChange={(e) => setForm({ ...form, description: e.target.value })} />
@@ -406,15 +540,53 @@ export const MenuManager: React.FC = () => {
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowModal(false)}>Cancel</Button>
-            <Button onClick={handleSave}>Save</Button>
+            <Button onClick={handleSave} disabled={isSaving}>
+              {isSaving ? <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-white/60 mr-2" /> : null}
+              Save
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
+        <Dialog open={recipeModalOpen} onOpenChange={setRecipeModalOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Retail Recipe Created</DialogTitle>
+              <DialogDescription>{recipeModalMessage}</DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="secondary" onClick={() => setRecipeModalOpen(false)}>Close</Button>
+              {recipeModalRecipeId ? (
+                <Button onClick={() => {
+                  try {
+                    setRecipeModalOpen(false);
+                    // Navigate to Recipes page and pass recipe id in location state
+                    navigate('/manufacturing/recipes', { state: { openRecipeId: recipeModalRecipeId } });
+                  } catch {
+                    // ignore
+                  }
+                }}>View Recipe</Button>
+              ) : null}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={validationModalOpen} onOpenChange={setValidationModalOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Validation</DialogTitle>
+              <DialogDescription>{validationMessage}</DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button onClick={() => setValidationModalOpen(false)}>OK</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
           <RecipeEditorDialog
             open={recipeEditorOpen}
-            onOpenChange={setRecipeEditorOpen}
-            editing={null}
+            onOpenChange={(open) => { setRecipeEditorOpen(open); if (!open) setRecipeToOpenId(null); }}
+            editing={recipeToOpenId ? getManufacturingRecipeById(recipeToOpenId) ?? null : null}
             stockItems={stockItems}
             initialValues={{ parentItemName: String(form.name ?? ''), parentItemCode: String((form as any).code ?? ''), parentItemId: String((form as any).categoryId ?? '') }}
             onSaved={(r) => {

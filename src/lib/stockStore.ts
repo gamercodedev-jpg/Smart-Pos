@@ -315,7 +315,7 @@ export function applyStockDeductions(deductions: Array<{ itemId: string; qty: nu
 
 // Attempt to apply deductions on the remote DB when Supabase is configured.
 // Falls back to local `applyStockDeductions` behavior if remote operations fail.
-export async function deductStockItemsRemote(deductions: Array<{ itemId: string; qty: number }>):
+export async function deductStockItemsRemote(deductions: Array<{ itemId: string; qty: number; unit?: string }>):
   Promise<
     | { ok: true; results: Array<{ itemId: string; before: number; after: number; unitCost: number }> }
     | { ok: false; insufficient: Array<{ itemId: string; requiredQty: number; onHandQty: number }> }

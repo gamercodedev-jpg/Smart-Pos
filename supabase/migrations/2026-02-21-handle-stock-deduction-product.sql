@@ -31,9 +31,28 @@ BEGIN
   END IF;
 
   -- Build JSON array of deductions: each ingredient quantity multiplied by p_quantity
-  SELECT json_agg(json_build_object('itemId', mri.stock_item_id::text, 'qty', (mri.quantity_used::numeric * p_quantity)))
+  -- and converted to the stock item's unit when needed (e.g., grams -> kilograms)
+  SELECT json_agg(json_build_object(
+    'itemId', mri.stock_item_id::text,
+    'qty', (
+      mri.quantity_used::numeric * p_quantity * (
+        CASE
+          -- grams to kilograms (1000 g = 1 kg)
+          WHEN lower(mri.unit) IN ('g') AND lower(si.unit) IN ('kg') THEN (1::numeric / 1000::numeric)
+          -- kilograms to grams
+          WHEN lower(mri.unit) IN ('kg') AND lower(si.unit) IN ('g') THEN 1000::numeric
+          -- milliliters to liters
+          WHEN lower(mri.unit) IN ('ml') AND lower(si.unit) IN ('l','ltr','ltrs') THEN (1::numeric / 1000::numeric)
+          -- liters to milliliters
+          WHEN lower(mri.unit) IN ('l','ltr','ltrs') AND lower(si.unit) IN ('ml') THEN 1000::numeric
+          ELSE 1::numeric
+        END
+      )
+    )
+  ))
   INTO deductions
   FROM public.manufacturing_recipe_ingredients mri
+  JOIN public.stock_items si ON si.id = mri.stock_item_id
   WHERE mri.manufacturing_recipe_id = recipe_id;
 
   IF deductions IS NULL OR deductions::jsonb = '[]'::jsonb THEN

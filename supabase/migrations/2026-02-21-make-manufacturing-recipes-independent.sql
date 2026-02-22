@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS manufacturing_recipe_ingredients (
   manufacturing_recipe_id uuid NOT NULL REFERENCES manufacturing_recipes(id) ON DELETE CASCADE,
   stock_item_id uuid NOT NULL REFERENCES stock_items(id) ON DELETE RESTRICT,
   quantity_used numeric NOT NULL,
+  unit text DEFAULT 'each',
   created_at timestamptz DEFAULT now()
 );
 

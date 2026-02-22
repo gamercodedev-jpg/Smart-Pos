@@ -258,7 +258,7 @@ export default function Settings() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">Departments</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">Category</CardTitle></CardHeader>
         <CardContent>
           <div className="mb-4 flex gap-2">
             <Input
@@ -271,7 +271,7 @@ export default function Settings() {
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
             {departmentsList.length === 0 ? (
-              <div className="text-sm text-muted-foreground">No departments defined.</div>
+              <div className="text-sm text-muted-foreground">No categories defined.</div>
             ) : (
               departmentsList.map((dept) => (
                 <div key={dept.id} className="p-3 bg-muted rounded-md text-sm">{dept.name}</div>
