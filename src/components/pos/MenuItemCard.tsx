@@ -1,8 +1,10 @@
 import { Card, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { POSMenuItem } from '@/types/pos';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo, useSyncExternalStore } from 'react';
 import { isSupabaseConfigured, supabase, SUPABASE_BUCKET } from '@/lib/supabaseClient';
+import { subscribeStockItems, getStockItemsSnapshot } from '@/lib/stockStore';
+import { subscribeManufacturingRecipes, getManufacturingRecipesSnapshot } from '@/lib/manufacturingRecipeStore';
 
 type Props = {
   item: POSMenuItem;
@@ -12,6 +14,26 @@ type Props = {
 
 export default function MenuItemCard({ item, onAdd, className }: Props) {
   const [imgSrc, setImgSrc] = useState<string | undefined>(undefined);
+  const stockItems = useSyncExternalStore(subscribeStockItems, getStockItemsSnapshot);
+  const recipes = useSyncExternalStore(subscribeManufacturingRecipes, getManufacturingRecipesSnapshot);
+
+  const lowStock = useMemo(() => {
+    try {
+      if (!recipes || !recipes.length) return false;
+      const recipe = recipes.find((r) => String(r.parentItemCode) === String(item.code) || String(r.parentItemId) === String(item.id));
+      if (!recipe) return false;
+      const outputQty = recipe.outputQty && recipe.outputQty > 0 ? recipe.outputQty : 1;
+      for (const ing of recipe.ingredients ?? []) {
+        const requiredPerUnit = (Number(ing.requiredQty) || 0) / outputQty;
+        const stock = stockItems.find((s) => s.id === ing.ingredientId);
+        const onHand = Number(stock?.currentStock ?? 0);
+        if (onHand < requiredPerUnit) return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }, [recipes, stockItems, item.code, item.id]);
 
   useEffect(() => {
     let mounted = true;
@@ -48,13 +70,18 @@ export default function MenuItemCard({ item, onAdd, className }: Props) {
   return (
     <Card
       className={cn(
-        'group relative overflow-hidden cursor-pointer bg-muted/30 hover:ring-2 hover:ring-primary transition-all active:scale-[0.99] aspect-[4/3]',
-        className
+        'group relative overflow-hidden bg-muted/30 hover:ring-2 hover:ring-primary transition-all active:scale-[0.99] aspect-[4/3]',
+        className,
+        lowStock ? 'opacity-85' : 'cursor-pointer'
       )}
-      onClick={() => onAdd(item)}
+      onClick={() => {
+        if (!lowStock) onAdd(item);
+      }}
       role="button"
       tabIndex={0}
+      aria-disabled={lowStock}
       onKeyDown={(e) => {
+        if (lowStock) return;
         if (e.key === 'Enter' || e.key === ' ') onAdd(item);
       }}
     >
@@ -82,12 +109,15 @@ export default function MenuItemCard({ item, onAdd, className }: Props) {
           <div>
             <p className="text-sm font-semibold leading-snug text-white line-clamp-2">{item.name}</p>
             <div className="mt-2 flex items-end justify-between">
-              <span className="text-[11px] text-white/80">Tap to add</span>
+              <span className="text-[11px] text-white/80">{lowStock ? 'Low stock' : 'Tap to add'}</span>
               <span className="text-sm font-bold text-white">K {item.price.toFixed(2)}</span>
             </div>
           </div>
         </div>
       </CardContent>
+      {lowStock ? (
+        <div className="absolute top-2 left-2 rounded-md bg-red-600 px-2 py-0.5 text-xs font-semibold text-white">Low Stock</div>
+      ) : null}
     </Card>
   );
 }

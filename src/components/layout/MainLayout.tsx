@@ -3,7 +3,8 @@ import React, { Suspense } from 'react';
 import { AppSidebar } from './AppSidebar';
 import { SidebarProvider, SidebarTrigger, SidebarInset } from '@/components/ui/sidebar';
 import { Button } from '@/components/ui/button';
-import { Bell, ChevronDown } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
+import LowStockAlerts from '@/components/common/LowStockAlerts';
 import { Badge } from '@/components/ui/badge';
 import {
   DropdownMenu,
@@ -56,10 +57,7 @@ export function MainLayout() {
             </div>
             <div className="flex items-center gap-2">
               <CurrencyPicker className="hidden sm:block" />
-              <Button variant="ghost" size="icon" className="relative">
-                <Bell className="h-5 w-5" />
-                <span className="absolute top-1 right-1 h-2 w-2 bg-destructive rounded-full" />
-              </Button>
+              <LowStockAlerts />
               {/* User Menu */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
