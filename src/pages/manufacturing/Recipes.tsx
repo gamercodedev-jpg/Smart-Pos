@@ -31,6 +31,30 @@ const mapUnitTypeToUnit = (u?: UnitType): string => {
 
 const getStockUnit = (s?: StockItem) => ((s as any)?.unit ?? mapUnitTypeToUnit(s?.unitType));
 
+const formatNumber = (n: number) => {
+  if (!Number.isFinite(n)) return String(n);
+  if (Math.abs(n) >= 1) return n.toFixed(3).replace(/\.0+$|(?<=\.[0-9]*?)0+$/,'');
+  return n.toFixed(4).replace(/0+$/,'');
+};
+
+// Helper to render ingredient quantity with explicit base-unit conversion when
+// the recipe stores textual 'g' or 'ml' quantities. Example: "100 ml (0.1 l)".
+const formatIngredientDisplay = (ing: any, stock?: StockItem) => {
+  const unitText = (ing as any).unit ?? (stock ? ((stock as any).unit) : undefined);
+  const qty = Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0;
+  if (unitText && stock) {
+    const iu = String(unitText).toLowerCase();
+    if (iu === 'g' && stock.unitType === 'KG') {
+      return `${formatNumber(qty)} g (${formatNumber(qty / 1000)} kg)`;
+    }
+    if (iu === 'ml' && stock.unitType === 'LTRS') {
+      return `${formatNumber(qty)} ml (${formatNumber(qty / 1000)} l)`;
+    }
+  }
+  const unitLabel = (ing as any).unit ?? mapUnitTypeToUnit(ing.unitType);
+  return `${formatNumber(qty)} ${unitLabel}`;
+};
+
 export default function Recipes() {
   const recipes = useSyncExternalStore(subscribeManufacturingRecipes, getManufacturingRecipesSnapshot);
   const stockItems = useSyncExternalStore(subscribeStockItems, getStockItemsSnapshot);
@@ -39,6 +63,8 @@ export default function Recipes() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const location = useLocation();
+
+  const stockById = useMemo(() => new Map(stockItems.map(s => [s.id, s] as const)), [stockItems]);
 
   const filteredRecipes = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
@@ -138,7 +164,7 @@ export default function Recipes() {
                     {recipe.ingredients.map((ing) => (
                       <TableRow key={ing.id}>
                         <TableCell>{ing.ingredientName}</TableCell>
-                        <TableCell className="text-right">{ing.requiredQty} {(ing as any).unit ?? mapUnitTypeToUnit(ing.unitType)}</TableCell>
+                        <TableCell className="text-right">{formatIngredientDisplay(ing, stockById.get(ing.ingredientId))}</TableCell>
                         <TableCell className="text-right"><NumericCell value={ing.unitCost} prefix="K " /></TableCell>
                         <TableCell className="text-right"><NumericCell value={ing.requiredQty * ing.unitCost} prefix="K " /></TableCell>
                       </TableRow>
@@ -185,26 +211,25 @@ function computeCosts(params: { draft: { outputQty: number; ingredients: DraftIn
   const byId = new Map(params.stockItems.map(s => [s.id, s] as const));
     const total = params.draft.ingredients.reduce((sum, ing) => {
       const s = byId.get(ing.ingredientId);
-      // determine effective unit cost based on per-ingredient unit selection
-      const mapUnitTypeToUnit = (u?: UnitType): string => {
-        switch (u) {
-          case 'KG': return 'kg';
-          case 'LTRS': return 'l';
-          case 'PACK': return 'pack';
-          case 'EACH':
-          default:
-            return 'each';
+      // We expect stored ingredient quantities to be in the stock base unit
+      // (KG for mass, LTRS for liquids). Some older recipes may still store
+      // quantities in 'g'/'ml' textual units; handle that by converting here.
+      const ingUnitText = (ing as any).unit ?? (s ? ((s as any).unit) : undefined);
+      let effectiveQty = Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0;
+      if (s && ingUnitText) {
+        const iu = String(ingUnitText).toLowerCase();
+        if (iu === 'g' && s.unitType === 'KG') {
+          // legacy stored as grams -> convert to kg
+          effectiveQty = effectiveQty / 1000;
         }
-      };
-
-      const ingUnit = (ing as any).unit ?? (s ? ((s as any).unit ?? mapUnitTypeToUnit(s.unitType)) : undefined);
-      let unitCost = s ? s.currentCost : 0;
-      if (s && ingUnit) {
-        const iu = String(ingUnit).toLowerCase();
-        if (iu === 'g' && s.unitType === 'KG') unitCost = s.currentCost / 1000;
-        if (iu === 'ml' && s.unitType === 'LTRS') unitCost = s.currentCost / 1000;
+        if (iu === 'ml' && s.unitType === 'LTRS') {
+          // legacy stored as millilitres -> convert to litres
+          effectiveQty = effectiveQty / 1000;
+        }
       }
-      return sum + (Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0) * (Number.isFinite(unitCost) ? unitCost : 0);
+
+      const unitCost = s ? s.currentCost : 0;
+      return sum + effectiveQty * (Number.isFinite(unitCost) ? unitCost : 0);
     }, 0);
   const outputQty = params.draft.outputQty > 0 ? params.draft.outputQty : 1;
   const unit = total / outputQty;
@@ -237,6 +262,7 @@ export function RecipeEditorDialog(props: {
   );
 
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [conversionHelper, setConversionHelper] = useState<Record<string, string>>({});
 
   // Reset when opening or changing edit target
   useEffect(() => {
@@ -258,7 +284,7 @@ export function RecipeEditorDialog(props: {
           return 'each';
       }
     };
-    setIngredients((editing?.ingredients ?? []).map((i) => ({ id: i.id, ingredientId: i.ingredientId, requiredQty: i.requiredQty, unit: getStockUnit(byId.get(i.ingredientId)) ?? mapUnitTypeToUnit(i.unitType) })));
+    setIngredients((editing?.ingredients ?? []).map((i) => ({ id: i.id, ingredientId: i.ingredientId, requiredQty: i.requiredQty, unit: (i as any).unit ?? getStockUnit(byId.get(i.ingredientId)) ?? mapUnitTypeToUnit(i.unitType) })));
   }, [open, editing?.id, departmentsList, initialValues?.parentItemCode, initialValues?.parentItemName]);
 
   const nameMatches = useMemo(() => {
@@ -385,16 +411,34 @@ export function RecipeEditorDialog(props: {
           return 'EACH';
         };
 
-        const unitType = i.unit ? mapUnitToUnitType(i.unit) : ((s?.unitType ?? 'EACH') as UnitType);
+        const detectedUnitType = i.unit ? mapUnitToUnitType(i.unit) : ((s?.unitType ?? 'EACH') as UnitType);
+
+        // Normalize requiredQty to the stock base unit when the user entered
+        // grams/ml. Store the numeric value in base units and set the textual
+        // unit to the base unit (kg / l) so later math is consistent.
+        let reqQty = Number.isFinite(i.requiredQty) ? i.requiredQty : 0;
+        let unitTextToStore: string | undefined = i.unit;
+        if (i.unit) {
+          const uu = String(i.unit).toLowerCase();
+          if (uu === 'g' && detectedUnitType === 'KG') {
+            reqQty = reqQty / 1000;
+            unitTextToStore = 'kg';
+          }
+          if (uu === 'ml' && detectedUnitType === 'LTRS') {
+            reqQty = reqQty / 1000;
+            unitTextToStore = 'l';
+          }
+        }
+
+        const unitType = detectedUnitType;
         return {
           id: i.id,
           ingredientId: i.ingredientId,
           ingredientCode: s?.code ?? i.ingredientId,
           ingredientName: s?.name ?? i.ingredientId,
-          requiredQty: Number.isFinite(i.requiredQty) ? i.requiredQty : 0,
+          requiredQty: reqQty,
           unitType,
-          // preserve the textual unit so the store can persist it to DB
-          ...(i.unit ? { unit: i.unit } : {}),
+          ...(unitTextToStore ? { unit: unitTextToStore } : {}),
           unitCost: s?.currentCost ?? 0,
         } as any;
       })
@@ -587,7 +631,32 @@ export function RecipeEditorDialog(props: {
                               setIngredients(prev => prev.map(p => (p.id === ing.id ? { ...p, requiredQty: Number.isFinite(v) ? v : 0 } : p)));
                             }}
                           />
-                          <Select value={ing.unit ?? getStockUnit(byId.get(ing.ingredientId))} onValueChange={(v) => setIngredients(prev => prev.map(p => p.id === ing.id ? { ...p, unit: v } : p))}>
+                          <Select
+                            value={ing.unit ?? getStockUnit(byId.get(ing.ingredientId))}
+                            onValueChange={(v) => {
+                              setIngredients(prev => prev.map(p => {
+                                if (p.id !== ing.id) return p;
+                                const prevQty = Number.isFinite(p.requiredQty) ? p.requiredQty : 0;
+                                // If user selected grams or millilitres, convert to base unit
+                                if (v === 'g' && prevQty > 0) {
+                                  const converted = prevQty / 1000;
+                                  // store converted qty and set unit to kg (base)
+                                  setConversionHelper(ch => ({ ...ch, [p.id]: `Converted ${prevQty} g → ${converted} kg` }));
+                                  // clear after short delay
+                                  setTimeout(() => setConversionHelper(ch => { const c = { ...ch }; delete c[p.id]; return c; }), 3500);
+                                  return { ...p, requiredQty: converted, unit: 'kg' };
+                                }
+                                if (v === 'ml' && prevQty > 0) {
+                                  const converted = prevQty / 1000;
+                                  setConversionHelper(ch => ({ ...ch, [p.id]: `Converted ${prevQty} ml → ${converted} l` }));
+                                  setTimeout(() => setConversionHelper(ch => { const c = { ...ch }; delete c[p.id]; return c; }), 3500);
+                                  return { ...p, requiredQty: converted, unit: 'l' };
+                                }
+                                // otherwise just set the selected textual unit
+                                return { ...p, unit: v };
+                              }));
+                            }}
+                          >
                             <SelectTrigger className="h-9 w-20">
                               <SelectValue placeholder="unit" />
                             </SelectTrigger>
@@ -602,6 +671,7 @@ export function RecipeEditorDialog(props: {
                               }
                             </SelectContent>
                           </Select>
+                          {conversionHelper[ing.id] ? <div className="text-xs text-muted-foreground mt-1">{conversionHelper[ing.id]}</div> : null}
                         </div>
                       </TableCell>
                       <TableCell className="text-right"><NumericCell value={unitCost} prefix="K " /></TableCell>

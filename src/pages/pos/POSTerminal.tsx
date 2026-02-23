@@ -380,6 +380,8 @@ export default function POSTerminal() {
     const toDeduct = orderItems.filter((i) => !i.isVoided && !i.sentToKitchen);
     if (!toDeduct.length) return;
 
+    console.debug('[POS] applyRecipeDeductionsOrThrow called', { toDeduct });
+
     const menuById = new Map(items.map((mi) => [mi.id, mi] as const));
     // Ensure remote recipes are loaded before computing deductions so
     // we don't silently skip deductions when the snapshot hasn't hydrated yet.
@@ -397,11 +399,12 @@ export default function POSTerminal() {
     const recipes = getManufacturingRecipesSnapshot();
     const recipeByCode = new Map(recipes.map((r) => [String(r.parentItemCode), r] as const));
 
-    const byItemId = new Map<string, { qty: number; unit?: string }>();
+    const byItemId = new Map<string, { qty: number }>();
     const missingRecipeForMenuItemIds: string[] = [];
     const missingStockItemIds: string[] = [];
 
-    const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+    // Use 6-decimal rounding for ingredient quantities to preserve small measurements (ml/g)
+    const round6 = (n: number) => Math.round((n + Number.EPSILON) * 1_000_000) / 1_000_000;
 
     for (const line of toDeduct) {
       const mi = menuById.get(line.menuItemId);
@@ -414,12 +417,15 @@ export default function POSTerminal() {
       const recipe = recipeByCode.get(code);
 
       const track = mi?.trackInventory ?? Boolean(fg || recipe);
-      if (!track) continue;
+      if (!track) {
+        console.debug('[POS] skipping inventory track for menu item', { menuItemId: line.menuItemId, code, fgExists: Boolean(fg), hasRecipe: Boolean(recipe) });
+        continue;
+      }
 
       // Prefer selling from finished goods if they exist and are available.
       if (fg && Number.isFinite(fg.currentStock) && fg.currentStock >= qty - 1e-9) {
-        const prev = byItemId.get(fgId);
-        byItemId.set(fgId, { qty: round2((prev?.qty ?? 0) + qty), unit: prev?.unit });
+          const prev = byItemId.get(fgId);
+          byItemId.set(fgId, { qty: round6((prev?.qty ?? 0) + qty) });
         continue;
       }
 
@@ -432,12 +438,10 @@ export default function POSTerminal() {
       const outputQty = recipe.outputQty > 0 ? recipe.outputQty : 1;
       const multiplier = qty / outputQty;
       for (const ing of recipe.ingredients) {
-        const requiredQty = round2((Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0) * multiplier);
+        const requiredQty = round6((Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0) * multiplier);
         if (requiredQty <= 0) continue;
         const prev = byItemId.get(ing.ingredientId);
-        // prefer explicit per-ingredient textual unit when available
-        const unitText = (ing as any).unit ?? prev?.unit;
-        byItemId.set(ing.ingredientId, { qty: round2((prev?.qty ?? 0) + requiredQty), unit: unitText });
+        byItemId.set(ing.ingredientId, { qty: round6((prev?.qty ?? 0) + requiredQty) });
       }
     }
 
@@ -445,11 +449,9 @@ export default function POSTerminal() {
       throw new RecipeIncompleteError(missingRecipeForMenuItemIds[0]!, ['NO_MANUFACTURING_RECIPE']);
     }
 
-    const deductions = Array.from(byItemId.entries()).map(([itemId, info]) => {
-      const out: any = { itemId, qty: info.qty };
-      if (info.unit) out.unit = info.unit;
-      return out;
-    });
+    const deductions = Array.from(byItemId.entries()).map(([itemId, info]) => ({ itemId, qty: info.qty }));
+
+    console.debug('[POS] prepared deductions', { deductions });
 
     for (const d of deductions) {
       if (!getStockItemById(d.itemId)) missingStockItemIds.push(d.itemId);
@@ -459,7 +461,9 @@ export default function POSTerminal() {
     }
 
     // Try to apply deductions on the server first; fall back to local deduction.
+    console.debug('[POS] calling deductStockItemsRemote', { deductions });
     const res = await deductStockItemsRemote(deductions as any);
+    console.debug('[POS] deductStockItemsRemote result', { res });
     if (res.ok !== true) {
       const first = res.insufficient[0];
       if (first) {
@@ -517,6 +521,15 @@ export default function POSTerminal() {
       clearOrder();
     } catch (e) {
       setShowPayment(false);
+      showDeductionError(e);
+    }
+  };
+
+  const handleProceedClick = async () => {
+    try {
+      await applyRecipeDeductionsOrThrow();
+      setShowPayment(true);
+    } catch (e) {
       showDeductionError(e);
     }
   };
@@ -982,7 +995,7 @@ export default function POSTerminal() {
             <Button
               className="h-12 bg-emerald-600 hover:bg-emerald-700 text-white"
               disabled={orderItems.length === 0}
-              onClick={() => setShowPayment(true)}
+              onClick={handleProceedClick}
             >
               Proceed
             </Button>

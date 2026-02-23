@@ -371,7 +371,7 @@ export default function StockItems() {
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="unit">Unit Type</Label>
+                    <Label htmlFor="unit">Unit</Label>
                     <Select value={addForm.unitType} onValueChange={val => setAddForm(f => ({ ...f, unitType: val }))}>
                       <SelectTrigger>
                         <SelectValue placeholder="Select unit" />
@@ -381,8 +381,11 @@ export default function StockItems() {
                         <SelectItem value="LTRS">LTRS</SelectItem>
                         <SelectItem value="EACH">EACH</SelectItem>
                         <SelectItem value="PACK">PACK</SelectItem>
+                        <SelectItem value="g">g</SelectItem>
+                        <SelectItem value="ml">ml</SelectItem>
                       </SelectContent>
                     </Select>
+                        <div className="text-sm text-muted-foreground mt-1">If you enter grams (<strong>g</strong>) or milliliters (<strong>ml</strong>), values will be converted to kg / l on save (for example: <strong>500 g → 0.5 KG</strong>).</div>
                   </div>
                 </div>
                 <div className="grid grid-cols-3 gap-4">
@@ -403,16 +406,28 @@ export default function StockItems() {
                   <div className="space-y-2">
                     {/* Dynamic label/placeholder based on unitType */}
                     {(() => {
-                      const ut = String(addForm.unitType || '').toUpperCase();
-                      if (ut === 'KG' || ut === 'LTRS') {
+                      const raw = String(addForm.unitType || '').trim();
+                      const norm = raw.toLowerCase();
+                      const displayUnit = (() => {
+                        if (norm === 'g') return 'g';
+                        if (norm === 'ml') return 'ml';
+                        if (['l', 'ltr', 'ltrs'].includes(norm)) return 'L';
+                        if (norm === 'kg') return 'KG';
+                        if (norm === 'pack') return 'Packs';
+                        if (norm === 'each' || !norm) return 'Units';
+                        return raw;
+                      })();
+
+                      if (displayUnit === 'KG' || displayUnit === 'L') {
                         return (
                           <>
-                            <Label htmlFor="stock">Current Stock (Total {ut === 'KG' ? 'KG' : 'L' })</Label>
-                            <Input id="stock" type="number" step="0.01" placeholder="e.g., 50.00" value={addForm.currentStock} onChange={e => setAddForm(f => ({ ...f, currentStock: e.target.value }))} />
+                            <Label htmlFor="stock">Current Stock (Total {displayUnit})</Label>
+                            <Input id="stock" type="number" step="0.01" placeholder={`e.g., 50.00`} value={addForm.currentStock} onChange={e => setAddForm(f => ({ ...f, currentStock: e.target.value }))} />
                           </>
                         );
                       }
-                      if (ut === 'PACK') {
+
+                      if (displayUnit === 'Packs') {
                         return (
                           <>
                             <Label htmlFor="stock">Number of Packs</Label>
@@ -420,27 +435,40 @@ export default function StockItems() {
                           </>
                         );
                       }
-                      // EACH or default
+
+                      // grams, ml, each, or other textual units
                       return (
                         <>
-                          <Label htmlFor="stock">Current Stock (Units)</Label>
-                          <Input id="stock" type="number" step="1" placeholder="e.g., 10" value={addForm.currentStock} onChange={e => setAddForm(f => ({ ...f, currentStock: e.target.value }))} />
+                          <Label htmlFor="stock">Current Stock (Total {displayUnit})</Label>
+                          <Input id="stock" type="number" step="1" placeholder={displayUnit === 'g' || displayUnit === 'ml' ? 'e.g., 500' : 'e.g., 10'} value={addForm.currentStock} onChange={e => setAddForm(f => ({ ...f, currentStock: e.target.value }))} />
                         </>
                       );
                     })()}
                   </div>
                   <div className="space-y-2">
                     {(() => {
-                      const ut = String(addForm.unitType || '').toUpperCase();
-                      if (ut === 'KG' || ut === 'LTRS') {
+                      const raw = String(addForm.unitType || '').trim();
+                      const norm = raw.toLowerCase();
+                      const displayUnit = (() => {
+                        if (norm === 'g') return 'g';
+                        if (norm === 'ml') return 'ml';
+                        if (['l', 'ltr', 'ltrs'].includes(norm)) return 'L';
+                        if (norm === 'kg') return 'KG';
+                        if (norm === 'pack') return 'Packs';
+                        if (norm === 'each' || !norm) return 'Units';
+                        return raw;
+                      })();
+
+                      if (displayUnit === 'KG' || displayUnit === 'L') {
                         return (
                           <>
-                            <Label htmlFor="reorder">Reorder Level (Total {ut === 'KG' ? 'KG' : 'L'})</Label>
-                            <Input id="reorder" type="number" step="0.01" placeholder="e.g., 20.00" value={addForm.reorderLevel} onChange={e => setAddForm(f => ({ ...f, reorderLevel: e.target.value }))} />
+                            <Label htmlFor="reorder">Reorder Level (Total {displayUnit})</Label>
+                            <Input id="reorder" type="number" step="0.01" placeholder={`e.g., 20.00`} value={addForm.reorderLevel} onChange={e => setAddForm(f => ({ ...f, reorderLevel: e.target.value }))} />
                           </>
                         );
                       }
-                      if (ut === 'PACK') {
+
+                      if (displayUnit === 'Packs') {
                         return (
                           <>
                             <Label htmlFor="reorder">Reorder Level (Packs)</Label>
@@ -448,10 +476,11 @@ export default function StockItems() {
                           </>
                         );
                       }
+
                       return (
                         <>
-                          <Label htmlFor="reorder">Reorder Level (Units)</Label>
-                          <Input id="reorder" type="number" step="1" placeholder="e.g., 5" value={addForm.reorderLevel} onChange={e => setAddForm(f => ({ ...f, reorderLevel: e.target.value }))} />
+                          <Label htmlFor="reorder">Reorder Level (Total {displayUnit})</Label>
+                          <Input id="reorder" type="number" step={displayUnit === 'g' || displayUnit === 'ml' ? '1' : '1'} placeholder={displayUnit === 'g' || displayUnit === 'ml' ? 'e.g., 250' : 'e.g., 5'} value={addForm.reorderLevel} onChange={e => setAddForm(f => ({ ...f, reorderLevel: e.target.value }))} />
                         </>
                       );
                     })()}
@@ -482,6 +511,8 @@ export default function StockItems() {
                     }
 
                     // For PACK: itemsPerPack is required and we store total units in DB
+                    const selectedRawUnit = String(unitType || '').trim();
+                    const selectedLower = selectedRawUnit.toLowerCase();
                     const ut = String(unitType || '').toUpperCase();
                     if (ut === 'PACK' && (!itemsPerPack || Number(itemsPerPack) <= 0)) {
                       toast({ title: 'Missing field', description: 'Please enter Items per Pack.' });
@@ -499,6 +530,14 @@ export default function StockItems() {
                       const perPack = parseFloat(itemsPerPack || '0');
                       dbCurrentStock = (isFinite(rawCurrent) ? rawCurrent : 0) * (isFinite(perPack) ? perPack : 0);
                       dbReorder = isFinite(rawReorder) ? rawReorder * (isFinite(perPack) ? perPack : 0) : undefined;
+                    } else if (selectedLower === 'g') {
+                      // User entered grams; convert to KG base unit
+                      dbCurrentStock = isFinite(rawCurrent) ? rawCurrent / 1000.0 : 0;
+                      dbReorder = isFinite(rawReorder) ? rawReorder / 1000.0 : undefined;
+                    } else if (selectedLower === 'ml') {
+                      // User entered milliliters; convert to LTRS base unit
+                      dbCurrentStock = isFinite(rawCurrent) ? rawCurrent / 1000.0 : 0;
+                      dbReorder = isFinite(rawReorder) ? rawReorder / 1000.0 : undefined;
                     } else if (ut === 'KG' || ut === 'LTRS') {
                       dbCurrentStock = isFinite(rawCurrent) ? rawCurrent : 0; // allow decimals
                       dbReorder = isFinite(rawReorder) ? rawReorder : undefined;
@@ -508,12 +547,22 @@ export default function StockItems() {
                       dbReorder = isFinite(rawReorder) ? Math.round(rawReorder) : undefined;
                     }
 
+                    const mapPreciseToUnitType = (u?: string) => {
+                      const uu = String(u ?? '').toLowerCase();
+                      if (uu === 'g' || uu === 'kg') return 'KG' as UnitType;
+                      if (uu === 'ml' || uu === 'l' || uu === 'ltr' || uu === 'ltrs') return 'LTRS' as UnitType;
+                      if (uu === 'pack') return 'PACK' as UnitType;
+                      return 'EACH' as UnitType;
+                    };
+
+                    const finalUnitType = mapPreciseToUnitType(addForm.unitType);
+
                     const newItem: StockItem = {
                       id: uuidv4(),
                       code,
                       name,
                       departmentId: departmentId as DepartmentId,
-                      unitType: unitType as UnitType,
+                      unitType: finalUnitType,
                       lowestCost: parseFloat(lowestCost) || 0,
                       highestCost: parseFloat(highestCost) || 0,
                       currentCost: parseFloat(currentCost) || 0,
@@ -522,7 +571,9 @@ export default function StockItems() {
                     };
                     try {
                       const { addStockItem } = await import('@/lib/stockStore');
-                      await addStockItem(newItem);
+                      // Attach precise textual unit (e.g., 'g' or 'ml') so server can store it in `unit` column
+                      (newItem as any).unitText = selectedRawUnit;
+                      await addStockItem(newItem as any);
                       setIsAddDialogOpen(false);
                       setAddForm({ code: '', name: '', departmentId: '', unitType: '', lowestCost: '', highestCost: '', currentCost: '', currentStock: '', reorderLevel: '', itemsPerPack: '' });
                       toast({ title: 'Item added', description: `${name} was added to inventory.` });
@@ -828,10 +879,12 @@ export default function StockItems() {
                                       <SelectValue placeholder="Select unit" />
                                     </SelectTrigger>
                                     <SelectContent>
-                                      <SelectItem value="KG">KG</SelectItem>
-                                      <SelectItem value="LTRS">LTRS</SelectItem>
-                                      <SelectItem value="EACH">EACH</SelectItem>
-                                      <SelectItem value="PACK">PACK</SelectItem>
+                                        <SelectItem value="KG">KG</SelectItem>
+                                        <SelectItem value="LTRS">LTRS</SelectItem>
+                                        <SelectItem value="EACH">EACH</SelectItem>
+                                        <SelectItem value="PACK">PACK</SelectItem>
+                                        <SelectItem value="g">g</SelectItem>
+                                        <SelectItem value="ml">ml</SelectItem>
                                     </SelectContent>
                                   </Select>
                                 </div>
@@ -932,6 +985,8 @@ export default function StockItems() {
                                   const { updateStockItem } = await import('@/lib/stockStore');
                                   // Convert UI inputs into DB values similar to Add dialog
                                   const { lowestCost, highestCost, currentCost, currentStock, reorderLevel } = editForm as any;
+                                  const selectedRawUnit = String(editForm.unitType || '').trim();
+                                  const selectedLower = selectedRawUnit.toLowerCase();
                                   const ut = String(editForm.unitType || '').toUpperCase();
                                   const rawCurrent = parseFloat(String(currentStock || '0'));
                                   const rawReorder = parseFloat(String(reorderLevel || '0'));
@@ -945,10 +1000,15 @@ export default function StockItems() {
                                       dbCurrentStock = (isFinite(rawCurrent) ? rawCurrent : 0) * perPack;
                                       dbReorder = isFinite(rawReorder) ? rawReorder * perPack : undefined;
                                     } else {
-                                      // No itemsPerPack provided — assume user supplied total units already
                                       dbCurrentStock = isFinite(rawCurrent) ? rawCurrent : 0;
                                       dbReorder = isFinite(rawReorder) ? rawReorder : undefined;
                                     }
+                                  } else if (selectedLower === 'g') {
+                                    dbCurrentStock = isFinite(rawCurrent) ? rawCurrent / 1000.0 : 0;
+                                    dbReorder = isFinite(rawReorder) ? rawReorder / 1000.0 : undefined;
+                                  } else if (selectedLower === 'ml') {
+                                    dbCurrentStock = isFinite(rawCurrent) ? rawCurrent / 1000.0 : 0;
+                                    dbReorder = isFinite(rawReorder) ? rawReorder / 1000.0 : undefined;
                                   } else if (ut === 'KG' || ut === 'LTRS') {
                                     dbCurrentStock = isFinite(rawCurrent) ? rawCurrent : 0;
                                     dbReorder = isFinite(rawReorder) ? rawReorder : undefined;

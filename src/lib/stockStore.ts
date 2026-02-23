@@ -64,7 +64,19 @@ async function fetchFromDb() {
       code: String(r.item_code ?? r.code ?? r.itemCode ?? ''),
       name: String(r.name ?? ''),
       departmentId: r.department_id ?? r.departmentId ?? null,
-      unitType: r.unit ?? r.unit_type ?? r.unitType ?? 'EACH',
+      // Normalize textual unit values (e.g., 'g','ml','kg','l') into frontend UnitType
+      unitType: (() => {
+        const raw = String(r.unit ?? r.unit_type ?? r.unitType ?? '').trim();
+        const u = raw.toLowerCase();
+        if (u === 'g' || u === 'kg') return 'KG';
+        if (u === 'ml' || u === 'l' || u === 'ltr' || u === 'ltrs') return 'LTRS';
+        if (u === 'pack') return 'PACK';
+        if (u === 'each' || u === '') return 'EACH';
+        // If DB already stores a base UnitType like 'KG' or 'LTRS', preserve it
+        const up = raw.toUpperCase();
+        if (up === 'KG' || up === 'LTRS' || up === 'EACH' || up === 'PACK') return up as any;
+        return 'EACH';
+      })(),
       lowestCost: typeof r.lowest_cost === 'number' ? r.lowest_cost : (typeof r.lowestCost === 'number' ? r.lowestCost : parseFloat(r.lowest_cost ?? r.lowestCost ?? 0) || 0),
       highestCost: typeof r.highest_cost === 'number' ? r.highest_cost : (typeof r.highestCost === 'number' ? r.highestCost : parseFloat(r.highest_cost ?? r.highestCost ?? 0) || 0),
       currentCost: typeof r.current_cost === 'number' ? r.current_cost : (typeof r.cost_per_unit === 'number' ? r.cost_per_unit : parseFloat(r.current_cost ?? r.cost_per_unit ?? 0) || 0),
@@ -114,7 +126,8 @@ export async function addStockItem(item: StockItem) {
       id: item.id,
       item_code: item.code,
       name: item.name,
-      unit: item.unitType,
+      // prefer precise textual unit if provided (e.g., 'g','ml'), otherwise store base unitType
+      unit: (item as any).unitText && String((item as any).unitText).trim() ? (item as any).unitText : item.unitType,
       cost_per_unit: item.currentCost ?? null,
       current_stock: item.currentStock ?? 0,
       min_stock_level: item.reorderLevel ?? null,
@@ -331,9 +344,15 @@ export async function deductStockItemsRemote(deductions: Array<{ itemId: string;
     // Try server-side atomic RPC first (preferred). Pass JSON array of { itemId, qty }.
     try {
       console.debug('[stockStore] calling RPC handle_stock_deductions', { deductions });
-      const { data: rpcData, error: rpcErr } = await supabase.rpc('handle_stock_deductions', { p_deductions: JSON.stringify(deductions) });
+      let payload: any = null;
+      payload = deductions.map(d => ({ stock_item_id: d.itemId, qty: d.qty, unit: d.unit ?? null }));
+      console.debug('[stockStore] RPC payload', { payload });
+      // Pass the JS object/array directly so PostgREST sends it as JSON, not as a string scalar
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('handle_stock_deductions', { p_deductions: payload });
+      // Log full RPC response and any error for debugging
+      console.debug('[stockStore] RPC response', { rpcData, rpcErr });
       if (rpcErr) {
-        console.warn('[stockStore] RPC handle_stock_deductions failed', rpcErr);
+        console.warn('[stockStore] RPC handle_stock_deductions failed', rpcErr, { payload, rpcData });
       } else if (rpcData && (rpcData as any).ok === true) {
         console.debug('[stockStore] RPC succeeded', rpcData);
         // Refresh local cache
@@ -342,16 +361,18 @@ export async function deductStockItemsRemote(deductions: Array<{ itemId: string;
       } else if (rpcData && (rpcData as any).ok === false) {
         // RPC returned insufficiency info
         console.warn('[stockStore] RPC reported insufficient stock', rpcData);
-        return { ok: false, insufficient: (rpcData as any).insufficient ?? [] } as any;
+        // include full rpcData in return for caller to inspect
+        return { ok: false, insufficient: (rpcData as any).insufficient ?? [], debug: rpcData } as any;
       }
     } catch (e) {
-      console.warn('[stockStore] handle_stock_deductions RPC call threw', e);
+      console.error('[stockStore] handle_stock_deductions RPC call threw', e, {  });
       // fallthrough to previous multi-step approach
     }
 
     const ids = deductions.map((d) => d.itemId);
     console.debug('[stockStore] attempting remote deduction (multi-step) for', { deductions, ids });
-    const { data, error } = await supabase.from('stock_items').select('id,current_stock,current_cost').in('id', ids as string[]);
+    // `stock_items` uses `cost_per_unit` column in DB
+    const { data, error } = await supabase.from('stock_items').select('id,current_stock,cost_per_unit').in('id', ids as string[]);
     if (error || !data) {
       console.warn('[stockStore] failed to fetch remote stock items, falling back to local', error);
       return applyStockDeductions(deductions);
@@ -378,7 +399,7 @@ export async function deductStockItemsRemote(deductions: Array<{ itemId: string;
       if (!row) continue;
       const before = typeof row.current_stock === 'number' ? row.current_stock : 0;
       const after = Math.round((before - d.qty + Number.EPSILON) * 100) / 100;
-      const unitCost = typeof row.current_cost === 'number' ? row.current_cost : 0;
+      const unitCost = typeof row.cost_per_unit === 'number' ? row.cost_per_unit : 0;
 
       const { data: updData, error: uErr, status: updStatus } = await supabase.from('stock_items').update({ current_stock: after }).eq('id', d.itemId).select('id,current_stock');
       if (uErr) {
