@@ -377,63 +377,49 @@ export default function POSTerminal() {
   };
 
   const applyRecipeDeductionsOrThrow = async () => {
+    // Unit-blind deduction: assume recipe.ingredients[].requiredQty is already
+    // expressed in the base unit (KG / LTR) and is the amount needed per
+    // single menu item. Do not perform any divisions or unit conversions.
     const toDeduct = orderItems.filter((i) => !i.isVoided && !i.sentToKitchen);
     if (!toDeduct.length) return;
 
-    const menuById = new Map(items.map((mi) => [mi.id, mi] as const));
-    // Ensure remote recipes are loaded before computing deductions so
-    // we don't silently skip deductions when the snapshot hasn't hydrated yet.
+    // Ensure recipes are loaded (best-effort) so snapshot is populated.
     try {
-      // dynamic import to avoid circular deps at module-eval time
       const mr = await import('@/lib/manufacturingRecipeStore');
       if (mr && typeof mr.ensureRecipesLoaded === 'function') {
-        // wait for remote fetch to complete (best-effort)
         // eslint-disable-next-line @typescript-eslint/no-floating-promises
         await mr.ensureRecipesLoaded();
       }
     } catch {
-      // ignore; we'll proceed with snapshot which may be empty
+      // ignore
     }
+
     const recipes = getManufacturingRecipesSnapshot();
+    const recipeByParentId = new Map(recipes.map((r) => [String(r.parentItemId), r] as const));
     const recipeByCode = new Map(recipes.map((r) => [String(r.parentItemCode), r] as const));
+    const menuById = new Map(items.map((mi) => [mi.id, mi] as const));
 
     const byItemId = new Map<string, number>();
     const missingRecipeForMenuItemIds: string[] = [];
     const missingStockItemIds: string[] = [];
 
-    const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
-
     for (const line of toDeduct) {
-      const mi = menuById.get(line.menuItemId);
-      const code = String(mi?.code ?? line.menuItemCode);
       const qty = Number.isFinite(line.quantity) ? line.quantity : 0;
       if (qty <= 0) continue;
 
-      const fgId = `fg-${code}`;
-      const fg = getStockItemById(fgId);
-      const recipe = recipeByCode.get(code);
-
-      const track = mi?.trackInventory ?? Boolean(fg || recipe);
-      if (!track) continue;
-
-      // Prefer selling from finished goods if they exist and are available.
-      if (fg && Number.isFinite(fg.currentStock) && fg.currentStock >= qty - 1e-9) {
-        byItemId.set(fgId, round2((byItemId.get(fgId) ?? 0) + qty));
-        continue;
-      }
-
-      // Otherwise, sell by consuming ingredients from the manufacturing recipe.
+      const menuItem = menuById.get(line.menuItemId);
+      const code = String(menuItem?.code ?? line.menuItemCode);
+      const recipe = recipeByParentId.get(line.menuItemId) ?? recipeByCode.get(code);
       if (!recipe) {
         missingRecipeForMenuItemIds.push(line.menuItemId);
         continue;
       }
 
-      const outputQty = recipe.outputQty > 0 ? recipe.outputQty : 1;
-      const multiplier = qty / outputQty;
-      for (const ing of recipe.ingredients) {
-        const requiredQty = round2((Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0) * multiplier);
-        if (requiredQty <= 0) continue;
-        byItemId.set(ing.ingredientId, round2((byItemId.get(ing.ingredientId) ?? 0) + requiredQty));
+      for (const ing of recipe.ingredients ?? []) {
+        const req = Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0;
+        if (req <= 0) continue;
+        const add = req * qty; // unit-blind multiply
+        byItemId.set(ing.ingredientId, (byItemId.get(ing.ingredientId) ?? 0) + add);
       }
     }
 
@@ -442,6 +428,7 @@ export default function POSTerminal() {
     }
 
     const deductions = Array.from(byItemId.entries()).map(([itemId, qty]) => ({ itemId, qty }));
+    console.debug('[POS] prepared unit-blind deductions', { deductions });
 
     for (const d of deductions) {
       if (!getStockItemById(d.itemId)) missingStockItemIds.push(d.itemId);
@@ -450,10 +437,9 @@ export default function POSTerminal() {
       throw new RecipeIncompleteError('STOCK_ITEMS_MISSING', missingStockItemIds.slice(0, 10));
     }
 
-    // Try to apply deductions on the server first; fall back to local deduction.
     const res = await deductStockItemsRemote(deductions as any);
     if (res.ok !== true) {
-      const first = res.insufficient[0];
+      const first = (res as any).insufficient?.[0];
       if (first) {
         throw new InsufficientStockError(first.itemId, first.requiredQty, first.onHandQty);
       }
@@ -1208,17 +1194,7 @@ export default function POSTerminal() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Close</AlertDialogCancel>
-            {hasPermission('voidItems') && (
-              <AlertDialogAction
-                onClick={() => {
-                  // Manager override: allow sale without deducting (not recommended).
-                  // We keep the order in POS so the manager can fix recipe/stock.
-                  setShowRecipeError(false);
-                }}
-              >
-                Manager Override
-              </AlertDialogAction>
-            )}
+            {/* Manager override removed: sales cannot bypass inventory deductions here. */}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
