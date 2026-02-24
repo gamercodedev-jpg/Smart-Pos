@@ -24,9 +24,18 @@ import {
   upsertKitchenItemStatus,
   type KitchenItemStatus,
 } from '@/lib/kitchenStore';
+import useKitchenRealtime from '@/hooks/useKitchenRealtime';
+import { fetchAndReplaceOrdersFromSupabase } from '@/lib/orderStore';
 
 export default function KitchenDisplay() {
+  // subscribe to DB realtime events for kitchen items
+  useKitchenRealtime();
   const prefersReducedMotion = useReducedMotion();
+
+  // Seed from DB on mount so KDS doesn't depend on local storage
+  useEffect(() => {
+    void fetchAndReplaceOrdersFromSupabase().catch(() => undefined);
+  }, []);
 
   const orders = useSyncExternalStore(subscribeOrders, getOrdersSnapshot, getOrdersSnapshot);
   const kitchen = useSyncExternalStore(subscribeKitchen, getKitchenSnapshot, getKitchenSnapshot);
@@ -114,9 +123,16 @@ export default function KitchenDisplay() {
     return m;
   }, [kitchen.items]);
 
-  function getItemStatus(orderId: string, itemId: string, preparedAt?: string): KitchenItemStatus {
-    if (preparedAt) return 'ready';
-    return kitchenKey.get(`${orderId}:${itemId}`) ?? 'pending';
+  function getItemStatus(order: (typeof orders)[number], item: (typeof orders)[number]['items'][number]): KitchenItemStatus {
+    // Prefer DB-backed `kitchenStatus` or `preparedAt`, then fall back to local kitchen store
+    const ks = (item as any).kitchenStatus ?? undefined;
+    if (ks) {
+      if (ks === 'ready' || ks === 'served') return 'ready';
+      if (ks === 'preparing' || ks === 'in_progress') return 'preparing';
+      return 'pending';
+    }
+    if (item.preparedAt) return 'ready';
+    return kitchenKey.get(`${order.id}:${item.id}`) ?? 'pending';
   }
 
   function getElapsedMinutes(order: (typeof orders)[number]) {
@@ -136,14 +152,14 @@ export default function KitchenDisplay() {
   function isTicketComplete(order: (typeof orders)[number]) {
     const kitchenItems = order.items.filter((i) => i.sentToKitchen && !i.isVoided);
     if (!kitchenItems.length) return true;
-    return kitchenItems.every((it) => getItemStatus(order.id, it.id, it.preparedAt) === 'ready');
+    return kitchenItems.every((it) => getItemStatus(order, it) === 'ready');
   }
 
   const activeOrders = useMemo(() => {
     const q = query.trim().toLowerCase();
     return orders
-      .filter((o) => o.status === 'sent' || o.status === 'ready')
-      .filter((o) => o.items.some((i) => i.sentToKitchen && !i.isVoided))
+      .filter((o) => ['sent', 'ready', 'paid', 'open'].includes(o.status))
+      .filter((o) => o.items.some((i) => i.sentToKitchen === true && (i.kitchenStatus ?? null) !== 'served' && !i.isVoided))
       .filter((o) => {
         if (!q) return true;
         const hay = `${o.orderNo} ${o.tableNo ?? ''} ${o.staffName} ${o.orderType}`.toLowerCase();

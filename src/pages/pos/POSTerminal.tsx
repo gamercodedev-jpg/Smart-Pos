@@ -16,7 +16,7 @@ import PaymentDialog from '@/components/pos/PaymentDialog';
 import { InsufficientStockError, RecipeIncompleteError } from '@/lib/recipeEngine';
 import { getManufacturingRecipesSnapshot } from '@/lib/manufacturingRecipeStore';
 import { applyStockDeductions, getStockItemById, deductStockItemsRemote } from '@/lib/stockStore';
-import { getOrdersSnapshot, subscribeOrders, upsertOrder } from '@/lib/orderStore';
+import { getOrdersSnapshot, subscribeOrders, upsertOrder, sendOrderPayload } from '@/lib/orderStore';
 import MenuItemCard from '@/components/pos/MenuItemCard';
 import { getModifierGroup } from '@/data/posModifiers';
 import { useBranding } from '@/contexts/BrandingContext';
@@ -470,9 +470,51 @@ export default function POSTerminal() {
     try {
       await applyRecipeDeductionsOrThrow();
 
-      upsertActiveOrder({ status: 'sent', sent: true });
+      const saved = upsertActiveOrder({ status: 'sent', sent: true });
 
+      // mark local items as sent
       setOrderItems(orderItems.map(item => ({ ...item, sentToKitchen: true })));
+
+      // also attempt an explicit server upsert using snake_case payloads
+      try {
+        const orderData = {
+          id: saved.id,
+          order_no: saved.orderNo,
+          status: saved.status,
+          order_type: saved.orderType,
+          table_no: saved.tableNo ?? null,
+          subtotal: saved.subtotal,
+          total: saved.total,
+          staff_id: saved.staffId,
+          staff_name: saved.staffName,
+          created_at: saved.createdAt,
+          sent_at: saved.sentAt ?? null,
+        };
+
+        const itemsData = (saved.items ?? []).map((it) => ({
+          order_id: saved.id,
+          menu_item_id: it.menuItemId,
+          menu_item_code: it.menuItemCode,
+          menu_item_name: it.menuItemName,
+          quantity: it.quantity,
+          unit_price: it.unitPrice,
+          unit_cost: it.unitCost,
+          discount_percent: it.discountPercent ?? null,
+          total: it.total,
+          notes: it.notes ?? null,
+          modifiers: it.modifiers ?? null,
+          is_voided: it.isVoided ?? false,
+          sent_to_kitchen: Boolean(it.sentToKitchen),
+          kitchen_status: 'pending',
+          created_at: saved.createdAt,
+        }));
+
+        const { data, error } = await sendOrderPayload(orderData, itemsData);
+        if (error) console.warn('[POSTerminal] explicit sendOrderPayload failed', error);
+        else console.debug('[POSTerminal] explicit sendOrderPayload success', data);
+      } catch (e) {
+        console.warn('[POSTerminal] explicit server sync failed', e);
+      }
     } catch (e) {
       showDeductionError(e);
     }

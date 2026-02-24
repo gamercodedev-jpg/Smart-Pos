@@ -101,6 +101,17 @@ async function sendOrderToSupabase(order: Order) {
 
   // Insert items directly into public.pos_order_items
   try {
+    // Ensure order header exists in `pos_orders` (upsert)
+    try {
+      const { data: orderUpsertResult, error: orderUpsertErr } = await supabase!.from('pos_orders').upsert(payloadOrder).select();
+      if (orderUpsertErr) {
+        console.error('[orderStore] failed to upsert pos_orders', orderUpsertErr);
+        throw orderUpsertErr;
+      }
+    } catch (e) {
+      console.error('[orderStore] upsert pos_orders failed', e);
+      throw e;
+    }
     // Remove any existing items for this order (best-effort)
     try {
       await supabase!.from('pos_order_items').delete().eq('order_id', remoteOrderId);
@@ -426,4 +437,148 @@ export function markOrderItemPrepared(params: { orderId: string; itemId: string;
 
 export function clearOrders() {
   save({ version: 1, orders: [] });
+}
+
+// Explicit helper to upsert an order row and its items into Supabase using
+// snake_case payloads. Returns { data, error } for callers to inspect.
+export async function sendOrderPayload(orderData: any, itemsData: any[]) {
+  if (!useRemote) return { data: null, error: new Error('no-remote') };
+  try {
+    // Upsert order (pos_orders)
+    const { data: orderUpserted, error: orderErr } = await supabase!.from('pos_orders').upsert(orderData).select();
+    if (orderErr) {
+      console.error('[orderStore] upsert pos_orders failed', orderErr);
+      return { data: null, error: orderErr };
+    }
+    console.debug('[orderStore] sendOrderPayload upsert result', { orderData, orderUpserted });
+
+    // Remove existing items for this order (best-effort)
+    try {
+      await supabase!.from('pos_order_items').delete().eq('order_id', orderData.id);
+    } catch (e) {
+      // ignore
+    }
+
+    // Insert provided items
+    const { data: itemsInserted, error: itemsErr } = await supabase!.from('pos_order_items').insert(itemsData).select();
+    if (itemsErr) {
+      console.error('[orderStore] insert pos_order_items failed', itemsErr);
+      return { data: null, error: itemsErr };
+    }
+
+    console.debug('[orderStore] sendOrderPayload items inserted', { itemsData, itemsInserted });
+
+    return { data: { order: orderUpserted, items: itemsInserted }, error: null };
+  } catch (err) {
+    console.warn('[orderStore] sendOrderPayload exception', err);
+    return { data: null, error: err };
+  }
+}
+
+// Fetch pos_order_items where sent_to_kitchen = true and their orders,
+// normalize snake_case DB rows into the app's `Order` shape and merge
+// into the in-memory store (preserving non-kitchen local orders).
+export async function fetchAndReplaceOrdersFromSupabase() {
+  if (!useRemote) return;
+  try {
+    // fetch kitchen items
+    const { data: items, error: itemsErr } = await supabase!
+      .from('pos_order_items')
+      .select('*')
+      .eq('sent_to_kitchen', true)
+      .order('created_at', { ascending: true });
+
+    if (itemsErr) {
+      console.warn('[orderStore] fetch kitchen items failed', itemsErr);
+      return;
+    }
+
+    if (!items || items.length === 0) {
+      // nothing to show — keep non-kitchen orders
+      const preserved = getState().orders.filter(o => !o.items.some(it => it.sentToKitchen));
+      save({ version: 1, orders: preserved });
+      return;
+    }
+
+    const orderIds = Array.from(new Set(items.map((r: any) => r.order_id)));
+
+    // fetch corresponding orders
+    const { data: ordersRows, error: ordersErr } = await supabase!
+      .from('pos_orders')
+      .select('*')
+      .in('id', orderIds);
+
+    if (ordersErr) {
+      console.warn('[orderStore] fetch orders failed', ordersErr);
+      return;
+    }
+
+    const ordersById: Record<string, any> = {};
+    for (const r of ordersRows || []) ordersById[String(r.id)] = r;
+
+    // group items by order_id and normalize
+    const grouped: Record<string, any[]> = {};
+    for (const it of items) {
+      const oid = String(it.order_id);
+      grouped[oid] = grouped[oid] || [];
+      grouped[oid].push(it);
+    }
+
+    const fetchedOrders = Object.keys(grouped).map((oid) => {
+      const orderRow = ordersById[oid] || { id: oid };
+      const itemRows = grouped[oid];
+
+      const itemsNormalized = itemRows.map((it: any) => ({
+        id: String(it.id),
+        menuItemId: String(it.menu_item_id),
+        menuItemCode: it.menu_item_code ?? String(it.menu_item_code ?? ''),
+        menuItemName: it.menu_item_name ?? it.menu_item_name,
+        quantity: Number(it.quantity) || 0,
+        unitPrice: Number(it.unit_price) || 0,
+        unitCost: Number(it.unit_cost) || 0,
+        discountPercent: it.discount_percent ?? undefined,
+        total: Number(it.total) || 0,
+        notes: it.notes ?? undefined,
+        modifiers: Array.isArray(it.modifiers) ? it.modifiers : (it.modifiers ? JSON.parse(it.modifiers) : undefined),
+        isVoided: Boolean(it.is_voided),
+        voidReason: it.void_reason ?? undefined,
+        sentToKitchen: Boolean(it.sent_to_kitchen),
+        kitchenStatus: it.kitchen_status ?? it.kitchenStatus ?? undefined,
+        preparedAt: it.prepared_at ?? it.preparedAt ?? undefined,
+      }));
+
+      const orderNorm: Order = {
+        id: String(orderRow.id),
+        orderNo: Number(orderRow.order_no) || 0,
+        tableId: orderRow.table_no ? `t${orderRow.table_no}` : undefined,
+        tableNo: orderRow.table_no ?? undefined,
+        orderType: orderRow.order_type,
+        status: orderRow.status,
+        staffId: String(orderRow.staff_id ?? ''),
+        staffName: orderRow.staff_name ?? '',
+        items: itemsNormalized,
+        subtotal: Number(orderRow.subtotal) || itemsNormalized.reduce((s, i) => s + i.total, 0),
+        discountAmount: Number(orderRow.discount_amount ?? 0) || 0,
+        discountPercent: Number(orderRow.discount_percent ?? 0) || 0,
+        tax: Number(orderRow.tax ?? 0) || 0,
+        total: Number(orderRow.total ?? 0) || 0,
+        totalCost: Number(orderRow.total_cost ?? 0) || 0,
+        grossProfit: Number(orderRow.gross_profit ?? 0) || 0,
+        gpPercent: Number(orderRow.gp_percent ?? 0) || 0,
+        createdAt: orderRow.created_at ?? new Date().toISOString(),
+        sentAt: orderRow.sent_at ?? undefined,
+        paidAt: orderRow.paid_at ?? undefined,
+        paymentMethod: orderRow.payment_method ?? undefined,
+      } as Order;
+
+      return orderNorm;
+    });
+
+    // Preserve non-kitchen local orders and merge
+    const preserved = getState().orders.filter(o => !o.items.some(it => it.sentToKitchen));
+    const merged = [...fetchedOrders, ...preserved];
+    save({ version: 1, orders: merged });
+  } catch (e) {
+    console.warn('[orderStore] fetchAndReplaceOrdersFromSupabase error', e);
+  }
 }
