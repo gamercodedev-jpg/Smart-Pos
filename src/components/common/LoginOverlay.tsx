@@ -17,6 +17,7 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
   const [isSignup, setIsSignup] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showSuccess, setShowSuccess] = useState(false);
   const [passwordErrors, setPasswordErrors] = useState<string[]>([]);
 
   const googleSignIn = async () => {
@@ -47,8 +48,17 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
         const res = await auth.signUp({ email: email.trim(), password, displayName: displayName || undefined });
         setBusy(false);
         if (res.ok) {
-          if (!brandExists) navigate('/app/company-settings');
-          else navigate('/app');
+          // If we were able to auto-sign-in on the backend, proceed into the app.
+          if ((res as any).autoSignedIn) {
+            if (!brandExists) navigate('/app/company-settings');
+            else navigate('/app');
+            return;
+          }
+
+          // Show success feedback and switch to login form so user can sign in.
+          setShowSuccess(true);
+          setIsSignup(false);
+          setError(null);
         } else if (res.needsConfirmation) {
           setError(res.message || 'Please check your email to confirm your account.');
         } else {
@@ -109,6 +119,19 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
             </button>
             <div className="text-center text-sm text-gray-500">or continue with email</div>
             <div>
+            {/* Simple success modal shown when account is created but not auto-logged-in */}
+            {showSuccess && (
+              <div className="fixed inset-0 flex items-center justify-center z-60">
+                <div className="absolute inset-0 bg-black/40" onClick={() => setShowSuccess(false)} />
+                <div className="relative bg-white rounded-lg p-6 shadow-lg max-w-sm text-center">
+                  <h3 className="text-lg font-semibold mb-2">Account created</h3>
+                  <p className="mb-4">Your account was created successfully. Please sign in.</p>
+                  <div className="flex justify-center">
+                    <button className="px-4 py-2 bg-primary text-white rounded" onClick={() => setShowSuccess(false)}>OK</button>
+                  </div>
+                </div>
+              </div>
+            )}
               {isSignup && (
                 <div>
                   <label className="block text-sm font-medium mb-1">Full name</label>

@@ -39,21 +39,62 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const fetchProfileAndBrand = useCallback(async (userId: string) => {
     try {
       // Fetch staff profile and join with brands table
-      const { data: staff, error } = await supabase
+      let { data: staff, error } = await supabase
         .from('staff')
         .select('*, brands(*)')
         .eq('user_id', userId)
         .maybeSingle();
 
+      // If no staff row found by user_id, attempt to find by email and link it to this user
+      let firstLinked = false;
+      if (!staff) {
+        // get auth user email
+        const { data: sessionData } = await supabase.auth.getSession();
+        const authUser = (sessionData as any)?.session?.user ?? null;
+        const email = authUser?.email ?? null;
+        if (email) {
+          const { data: byEmail } = await supabase
+            .from('staff')
+            .select('*, brands(*)')
+            .eq('email', email)
+            .limit(1)
+            .maybeSingle();
+          if (byEmail) {
+            staff = byEmail as any;
+            // Attempt to set user_id on the existing staff row (if not set)
+            if (!staff.user_id) {
+              try {
+                await supabase.from('staff').update({ user_id: userId }).eq('id', staff.id);
+                staff.user_id = userId;
+                firstLinked = true;
+              } catch (e) {
+                console.warn('Could not link staff by email to user_id', e);
+              }
+            }
+          }
+        }
+      }
+
       if (error) throw error;
 
       if (staff) {
+        // If this was the user's first time logging in and there's no brand yet,
+        // make them the owner/admin for the upcoming brand creation flow.
+        if (firstLinked && !staff.brand_id) {
+          try {
+            await supabase.from('staff').update({ role: 'owner' }).eq('id', staff.id);
+            staff.role = 'owner';
+          } catch (e) {
+            console.warn('Could not promote staff to owner', e);
+          }
+        }
+
         setUser({
           id: staff.user_id ?? staff.id,
           name: staff.full_name ?? staff.display_name ?? 'User',
           email: staff.email,
           role: staff.role,
-          is_super_admin: staff.is_super_admin,
+          is_super_admin: (staff as any).is_super_admin ?? false,
           brand_id: staff.brand_id
         });
         setBrand(staff.brands || null);
@@ -129,43 +170,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!supabase) return { ok: false, message: 'Supabase not configured' };
     try {
       const { email, password, displayName } = opts;
-      const { data, error } = await supabase.auth.signUp({ email, password });
+
+      // Create auth user
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { full_name: displayName },
+        },
+      });
+
       if (error) {
         console.error('signUp error', error);
         return { ok: false, message: error.message ?? String(error) };
       }
 
-      const userId = (data as any)?.user?.id ?? (data as any)?.id ?? null;
-
-      // create staff row (best-effort)
-      try {
-        const row = {
-          user_id: userId,
-          email,
-          display_name: displayName ?? email.split('@')[0],
-          role: 'waitron',
-          is_active: true,
-        } as any;
-        await supabase.from('staff').insert(row);
-      } catch (e) {
-        console.error('failed to create staff row after signUp', e);
-      }
-
-      // check whether a session exists (some Supabase configs require email confirmation)
-      try {
-        const { data: sessionData } = await supabase.auth.getSession();
-        const session = (sessionData as any)?.session ?? null;
-        if (session && session.user) {
-          // we are signed in
-          await refreshProfile();
-          return { ok: true };
+      // If signUp returned a session, the user is already authenticated and we can create staff and refresh.
+      const signUpSession = (data as any)?.session ?? null;
+      if (signUpSession && signUpSession.user) {
+        const userId = signUpSession.user.id;
+        try {
+          await supabase
+            .from('staff')
+            .insert({ user_id: userId, email, full_name: displayName ?? email.split('@')[0], role: 'staff', brand_id: null })
+            .select();
+        } catch (e) {
+          console.warn('staff insert warning', e);
         }
-        // no session -> likely needs email confirmation
-        return { ok: false, needsConfirmation: true, message: 'Please confirm your email before signing in.' };
-      } catch (e) {
-        console.error('error checking session after signUp', e);
-        return { ok: true };
+
+        await fetchProfileAndBrand(userId);
+        return { ok: true, autoSignedIn: true } as any;
       }
+
+      // No session returned from signUp — likely email confirmation required or auto-login disabled.
+      // Create a placeholder staff row (user_id null) so the UI shows the account in staff lists
+      // and so it can be linked later when the user signs in.
+      try {
+        // only insert if no staff with this email exists
+        const { data: existing } = await supabase.from('staff').select('id').eq('email', email).limit(1).maybeSingle();
+        if (!existing) {
+          await supabase.from('staff').insert({ user_id: null, email, full_name: displayName ?? email.split('@')[0], role: 'staff', brand_id: null }).select();
+        }
+      } catch (e) {
+        console.warn('Could not create placeholder staff row after signup', e);
+      }
+
+      // Do not attempt signInWithPassword (avoids 400 token requests). Let the UI switch to login.
+      return { ok: true, autoSignedIn: false } as any;
     } catch (e: any) {
       console.error('signUp unexpected', e);
       return { ok: false, message: e?.message ?? String(e) };
