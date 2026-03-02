@@ -69,11 +69,40 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
     try {
       let logoUrl: string | undefined = undefined;
       if (logoFile) {
-        const uploaded = await uploadLogo(logoFile);
-        if (uploaded) {
-          logoUrl = uploaded;
-        } else {
-          // Upload failed (likely storage RLS). Fallback: embed file as data URL so brand can be created.
+        // Protect against hanging network calls by timing out long requests
+        const withTimeout = async <T,>(p: Promise<T>, ms = 15000): Promise<T> => {
+          let timer: any;
+          const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), ms); });
+          try {
+            return await Promise.race([p, timeout]) as T;
+          } finally {
+            clearTimeout(timer);
+          }
+        };
+
+        try {
+          const uploaded = await withTimeout(uploadLogo(logoFile), 15000);
+          if (uploaded) {
+            logoUrl = uploaded;
+          } else {
+            // Upload returned null (likely denied). Fallback to data URL.
+            try {
+              logoUrl = await new Promise<string | undefined>((resolve) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                  const result = typeof reader.result === 'string' ? reader.result : undefined;
+                  resolve(result);
+                };
+                reader.onerror = () => resolve(undefined);
+                reader.readAsDataURL(logoFile as Blob);
+              });
+            } catch (e) {
+              console.warn('Failed to create data URL fallback for logo', e);
+            }
+          }
+        } catch (e: any) {
+          console.error('uploadLogo timed out or failed', e);
+          // Attempt data URL fallback
           try {
             logoUrl = await new Promise<string | undefined>((resolve) => {
               const reader = new FileReader();
@@ -84,8 +113,8 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
               reader.onerror = () => resolve(undefined);
               reader.readAsDataURL(logoFile as Blob);
             });
-          } catch (e) {
-            console.warn('Failed to create data URL fallback for logo', e);
+          } catch (e2) {
+            console.warn('Failed to create data URL fallback after upload failure', e2);
           }
         }
       }
@@ -97,10 +126,25 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
 
       const existingId = await getFirstCompanyRowId();
       let result = null;
-      if (existingId) {
-        result = await updateCompanySettingsOnServer(existingId, payload);
-      } else {
-        result = await createCompanySettingsOnServer({ ...(payload as Partial<CompanySettings>), created_by: createdBy });
+      const withTimeout = async <T,>(p: Promise<T>, ms = 15000): Promise<T> => {
+        let timer: any;
+        const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), ms); });
+        try {
+          return await Promise.race([p, timeout]) as T;
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+
+      try {
+        if (existingId) {
+          result = await withTimeout(updateCompanySettingsOnServer(existingId, payload), 15000);
+        } else {
+          result = await withTimeout(createCompanySettingsOnServer({ ...(payload as Partial<CompanySettings>), created_by: createdBy }), 15000);
+        }
+      } catch (e: any) {
+        console.error('create/update brand timed out or failed', e);
+        return false;
       }
 
       if (result) {

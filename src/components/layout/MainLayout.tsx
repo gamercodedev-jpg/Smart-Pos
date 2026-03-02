@@ -63,7 +63,7 @@ export function MainLayout() {
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="sm" className="gap-2">
                     <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center text-primary font-medium">
-                      {user?.name ? user.name.charAt(0).toUpperCase() : '?'}
+                      {(user?.name ?? '?').charAt(0).toUpperCase()}
                     </div>
                     <div className="hidden sm:block text-left">
                       <span className="text-sm font-medium">{user?.name}</span>
@@ -93,10 +93,10 @@ export function MainLayout() {
                     >
                       <div className="flex items-center gap-2">
                         <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center text-xs font-medium">
-                          {u.name.charAt(0)}
+                          {(u.name ?? '?').charAt(0)}
                         </div>
                         <div>
-                          <p className="text-sm">{u.name}</p>
+                          <p className="text-sm">{u.name ?? ''}</p>
                           <p className="text-xs text-muted-foreground">{ROLE_NAMES[u.role]}</p>
                         </div>
                       </div>

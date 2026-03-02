@@ -10,6 +10,7 @@ function mapDbRowToSettings(row: any): CompanySettings {
     primaryColorHex: row.primary_color_hex ?? '#2563eb',
     logoDataUrl: row.logo_path ?? row.logo_url ?? undefined,
     metadata: row.metadata ?? {},
+    brandType: row.brand_type ?? row.business_type ?? 'restaurant',
   } as CompanySettings;
 }
 
@@ -50,6 +51,7 @@ export async function createCompanySettingsOnServer(payload: Partial<CompanySett
     tagline: payload.tagline,
     primary_color_hex: payload.primaryColorHex,
     logo_path: payload.logoDataUrl,
+    brand_type: payload.brandType ?? 'restaurant',
     metadata: payload.metadata ?? {},
     // Only set owner_id if created_by looks like a UUID to avoid SQL errors
     owner_id: payload.created_by && /^[0-9a-fA-F\-]{36}$/.test(payload.created_by) ? payload.created_by : null,
@@ -104,6 +106,7 @@ export async function updateCompanySettingsOnServer(id: string, payload: Partial
     tagline: payload.tagline,
     primary_color_hex: payload.primaryColorHex,
     logo_path: payload.logoDataUrl,
+    brand_type: payload.brandType ?? 'restaurant',
     metadata: payload.metadata ?? {},
   };
   const { data, error } = await supabase.from('brands').update(row).eq('id', id).select().limit(1);

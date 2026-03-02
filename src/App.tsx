@@ -11,6 +11,10 @@ import { useAuth } from '@/contexts/AuthContext';
 import { ProtectedRoute } from './components/common/ProtectedRoute';
 import React, { Suspense } from "react";
 import { InstallPrompt } from "@/components/common/InstallPrompt";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { useBranding } from './contexts/BrandingContext';
+import { useNavigate } from 'react-router-dom';
 
 import Dashboard from "./pages/Dashboard";
 import StockItems from "./pages/inventory/StockItems";
@@ -70,6 +74,7 @@ const App = () => {
         <CurrencyProvider>
           <TooltipProvider>
             <InstallPrompt />
+            <BrandPromptModal />
               <Suspense fallback={<AppShellLoader />}>
               <Routes>
                 <Route path="/" element={<Landing />} />
@@ -120,3 +125,33 @@ const App = () => {
 };
 
 export default App;
+
+function BrandPromptModal() {
+  const { brandExists } = useBranding();
+  const { isAuthenticated } = useAuth();
+  const [open, setOpen] = React.useState(false);
+  const [dismissed, setDismissed] = React.useState(false);
+  const navigate = useNavigate();
+
+  React.useEffect(() => {
+    if (isAuthenticated && !brandExists && !dismissed) setOpen(true);
+    else setOpen(false);
+  }, [isAuthenticated, brandExists, dismissed]);
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) setDismissed(true); setOpen(o); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Create a brand</DialogTitle>
+          <DialogDescription>
+            You have no brand created yet. Create a brand now to continue — this makes you the owner and sets up branding across the app.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="outline" onClick={() => { setOpen(false); setDismissed(true); }}>Remind me later</Button>
+          <Button onClick={() => { setOpen(false); navigate('/app/company-settings'); }}>Create brand</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}

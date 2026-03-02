@@ -6,6 +6,7 @@ export const defaultCompanySettings: CompanySettings = {
   appName: 'Mthunzi-Smart',
   tagline: 'Back Office + POS',
   primaryColorHex: '#2563eb',
+  brandType: 'restaurant',
 };
 
 export const getCompanySettings = (): CompanySettings => {

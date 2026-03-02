@@ -35,8 +35,9 @@ async function refreshFromSupabase() {
     // Prefer the public schema (categories/products) first because many projects
     // migrated away from the legacy `erp` pos_* tables. If public tables are
     // unavailable or the query fails, fall back to the legacy `erp` schema.
-    try {
-      const resCats = await supabase!.from('categories').select('id,name').order('name', { ascending: true });
+      try {
+        // Use `departments` as the canonical table for categories in the public schema.
+        const resCats = await supabase!.from('departments').select('id,name').order('name', { ascending: true });
       if (resCats.error) throw resCats.error;
 
       // Map products to menu items. Expect `products` to have `id, code, name, category_id, base_price`.
@@ -255,7 +256,7 @@ export function upsertPosCategory(category: POSCategory) {
         // Try public.categories
       }
 
-      const { data: pubData, error: pubErr, status: pubStatus } = await supabase!.from('categories').upsert({
+      const { data: pubData, error: pubErr, status: pubStatus } = await supabase!.from('departments').upsert({
         id: category.id,
         name: category.name,
       }).select();
@@ -314,7 +315,7 @@ export function deletePosCategory(categoryId: string) {
         console.error('[posMenuStore] delete category items failed (public)', { status: delItemsStatus, error: itemsErr, data: delItemsData });
         return;
       }
-      const { data: delCatData, error: delCatErr, status: delCatStatus } = await supabase!.from('categories').delete().eq('id', categoryId).select();
+      const { data: delCatData, error: delCatErr, status: delCatStatus } = await supabase!.from('departments').delete().eq('id', categoryId).select();
       if (delCatErr) {
         console.error('[posMenuStore] delete category failed (public)', { status: delCatStatus, error: delCatErr, data: delCatData });
         return;
@@ -497,10 +498,10 @@ export function resetPosMenuToDefaults() {
       try {
         const { data: delItemsData, error: delItemsErr, status: delItemsStatus } = await supabase!.from('products').delete().neq('id', '__never__').select();
         if (delItemsErr) console.error('[posMenuStore] reset delete items failed (public)', { status: delItemsStatus, error: delItemsErr, data: delItemsData });
-        const { data: delCatsData, error: delCatsErr, status: delCatsStatus } = await supabase!.from('categories').delete().neq('id', '__never__').select();
+        const { data: delCatsData, error: delCatsErr, status: delCatsStatus } = await supabase!.from('departments').delete().neq('id', '__never__').select();
         if (delCatsErr) console.error('[posMenuStore] reset delete categories failed (public)', { status: delCatsStatus, error: delCatsErr, data: delCatsData });
 
-        const { data: catData, error: catErr, status: catStatus } = await supabase!.from('categories').insert(
+        const { data: catData, error: catErr, status: catStatus } = await supabase!.from('departments').insert(
           seeded.categories.map((c) => ({ id: c.id, name: c.name }))
         ).select();
         if (catErr) console.error('[posMenuStore] reset insert categories failed (public)', { status: catStatus, error: catErr, data: catData });

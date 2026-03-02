@@ -3,4 +3,6 @@ export type CompanySettings = {
   tagline?: string;
   primaryColorHex: string; // e.g. #3B82F6
   logoDataUrl?: string; // data: URL from file upload (or later: remote URL)
+  brandType?: 'restaurant' | 'retail';
+  metadata?: Record<string, any>;
 };
