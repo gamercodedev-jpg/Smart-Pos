@@ -68,8 +68,9 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
         const ok = await auth.login(email.trim(), password);
       setBusy(false);
       if (ok) {
-        if (!brandExists) navigate('/app/company-settings');
-        else navigate('/app');
+        // After login, always go to the app shell; brand
+        // creation prompts are handled globally via BrandPromptModal.
+        navigate('/app');
       } else {
         setError('Invalid credentials');
       }

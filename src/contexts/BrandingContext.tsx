@@ -9,6 +9,7 @@ import {
   updateCompanySettingsOnServer,
   getFirstCompanyRowId,
 } from '@/lib/brandService';
+import { useAuth } from '@/contexts/AuthContext';
 
 type BrandingContextValue = {
   settings: CompanySettings;
@@ -44,31 +45,18 @@ const applyBrandingToDocument = (settings: CompanySettings) => {
 export function BrandingProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<CompanySettings>(() => getCompanySettings());
   const [brandExists, setBrandExists] = useState<boolean>(false);
+  const { user } = useAuth();
 
-  // Fetch server settings once on mount with branding fallback and cleanup
+  // Fetch server settings once on mount
   useEffect(() => {
     let timeoutId: any = null;
     let finished = false;
     (async () => {
       try {
-        // Branding Fallback
-        if (!settings && !settings.brandId) {
-          setSettings(defaultCompanySettings);
-          setBrandExists(false);
-          finished = true;
-          return;
-        }
-        if (!settings.brandId) {
-          setSettings(defaultCompanySettings);
-          setBrandExists(false);
-          finished = true;
-          return;
-        }
         const server = await getCompanySettingsFromServer();
         if (server) {
           setSettings((prev) => ({ ...prev, ...server }));
           setBrandExists(true);
-          finished = true;
         }
       } catch (err) {
         setSettings(defaultCompanySettings);
@@ -81,15 +69,6 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
         }
       }
     })();
-    timeoutId = setTimeout(() => {
-      if (!finished) {
-        setSettings(defaultCompanySettings);
-        setBrandExists(false);
-      }
-    }, 3000);
-    return () => {
-      if (timeoutId) clearTimeout(timeoutId);
-    };
   }, []);
 
   useEffect(() => {

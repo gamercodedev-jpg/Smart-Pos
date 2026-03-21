@@ -16,13 +16,56 @@ function mapDbRowToSettings(row: any): CompanySettings {
 
 export async function getCompanySettingsFromServer(): Promise<CompanySettings | null> {
   if (!supabase) return null;
-  const { data, error } = await supabase.from('brands').select('*').limit(1).order('created_at', { ascending: true });
-  if (error) {
-    console.error('getCompanySettingsFromServer error', error);
+  try {
+    // Resolve the currently authenticated user
+    const { data: sessionData } = await supabase.auth.getSession();
+    const userId = (sessionData as any)?.session?.user?.id ?? null;
+
+    if (!userId) {
+      // No logged-in user means we can't safely determine a brand; treat as no brand.
+      return null;
+    }
+
+    // 1) Prefer the brand linked through the staff row for this user (multi-tenant safe).
+    const { data: staffRow, error: staffError } = await supabase
+      .from('staff')
+      .select('brand_id, brands(*)')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (staffError) {
+      console.error('getCompanySettingsFromServer staff lookup error', staffError);
+    }
+
+    const brandFromStaff = (staffRow as any)?.brands;
+    if (brandFromStaff) {
+      return mapDbRowToSettings(brandFromStaff);
+    }
+
+    // 2) Fallback: a brand explicitly owned by this user via owner_id.
+    const { data: ownedBrands, error: ownedError } = await supabase
+      .from('brands')
+      .select('*')
+      .eq('owner_id', userId)
+      .order('created_at', { ascending: true })
+      .limit(1);
+
+    if (ownedError) {
+      console.error('getCompanySettingsFromServer owner lookup error', ownedError);
+      return null;
+    }
+
+    if (ownedBrands && ownedBrands.length > 0) {
+      return mapDbRowToSettings(ownedBrands[0]);
+    }
+
+    // 3) No brand associated with this user — even if other brands exist in the DB,
+    //    we must not attach them to someone else's brand.
+    return null;
+  } catch (err) {
+    console.error('getCompanySettingsFromServer unexpected error', err);
     return null;
   }
-  if (!data || data.length === 0) return null;
-  return mapDbRowToSettings(data[0]);
 }
 
 export async function uploadLogo(file: File, companyId?: string): Promise<string | null> {
@@ -119,7 +162,44 @@ export async function updateCompanySettingsOnServer(id: string, payload: Partial
 
 export async function getFirstCompanyRowId(): Promise<string | null> {
   if (!supabase) return null;
-  const { data, error } = await supabase.from('brands').select('id').limit(1).order('created_at', { ascending: true });
-  if (error) return null;
-  return data?.[0]?.id ?? null;
+  try {
+    // Resolve the current auth user so we can scope brand selection per-user.
+    const { data: sessionData } = await supabase.auth.getSession();
+    const userId = (sessionData as any)?.session?.user?.id ?? null;
+
+    if (!userId) return null;
+
+    // 1) If this user already has a staff row with a brand_id, prefer that brand.
+    const { data: staffRow, error: staffError } = await supabase
+      .from('staff')
+      .select('brand_id')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (staffError) {
+      console.error('getFirstCompanyRowId staff lookup error', staffError);
+    }
+
+    if (staffRow?.brand_id) {
+      return staffRow.brand_id as string;
+    }
+
+    // 2) Fallback: a brand where this user is recorded as the owner.
+    const { data, error } = await supabase
+      .from('brands')
+      .select('id')
+      .eq('owner_id', userId)
+      .order('created_at', { ascending: true })
+      .limit(1);
+
+    if (error) {
+      console.error('getFirstCompanyRowId owner lookup error', error);
+      return null;
+    }
+
+    return data?.[0]?.id ?? null;
+  } catch (err) {
+    console.error('getFirstCompanyRowId unexpected error', err);
+    return null;
+  }
 }
