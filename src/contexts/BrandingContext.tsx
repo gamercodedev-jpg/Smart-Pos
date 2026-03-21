@@ -9,6 +9,7 @@ import {
   updateCompanySettingsOnServer,
   getFirstCompanyRowId,
 } from '@/lib/brandService';
+import { useAuth } from '@/contexts/AuthContext';
 
 type BrandingContextValue = {
   settings: CompanySettings;
@@ -44,21 +45,31 @@ const applyBrandingToDocument = (settings: CompanySettings) => {
 export function BrandingProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<CompanySettings>(() => getCompanySettings());
   const [brandExists, setBrandExists] = useState<boolean>(false);
+  const { user } = useAuth();
 
-  // Fetch server settings once on mount
+  // Fetch server settings whenever the authenticated user changes so
+  // that brand existence is evaluated per-user instead of globally.
   useEffect(() => {
     (async () => {
       try {
+        if (!user) {
+          // No authenticated user: treat as no brand for gating purposes.
+          setBrandExists(false);
+          return;
+        }
+
         const server = await getCompanySettingsFromServer();
         if (server) {
           setSettings((prev) => ({ ...prev, ...server }));
           setBrandExists(true);
+        } else {
+          setBrandExists(false);
         }
       } catch (err) {
         // ignore network errors, local cache will be used
       }
     })();
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     applyBrandingToDocument(settings);
