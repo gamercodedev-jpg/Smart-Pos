@@ -45,19 +45,51 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<CompanySettings>(() => getCompanySettings());
   const [brandExists, setBrandExists] = useState<boolean>(false);
 
-  // Fetch server settings once on mount
+  // Fetch server settings once on mount with branding fallback and cleanup
   useEffect(() => {
+    let timeoutId: any = null;
+    let finished = false;
     (async () => {
       try {
+        // Branding Fallback
+        if (!settings && !settings.brandId) {
+          setSettings(defaultCompanySettings);
+          setBrandExists(false);
+          finished = true;
+          return;
+        }
+        if (!settings.brandId) {
+          setSettings(defaultCompanySettings);
+          setBrandExists(false);
+          finished = true;
+          return;
+        }
         const server = await getCompanySettingsFromServer();
         if (server) {
           setSettings((prev) => ({ ...prev, ...server }));
           setBrandExists(true);
+          finished = true;
         }
       } catch (err) {
-        // ignore network errors, local cache will be used
+        setSettings(defaultCompanySettings);
+        setBrandExists(false);
+        finished = true;
+      } finally {
+        if (!finished) {
+          setSettings(defaultCompanySettings);
+          setBrandExists(false);
+        }
       }
     })();
+    timeoutId = setTimeout(() => {
+      if (!finished) {
+        setSettings(defaultCompanySettings);
+        setBrandExists(false);
+      }
+    }, 3000);
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, []);
 
   useEffect(() => {

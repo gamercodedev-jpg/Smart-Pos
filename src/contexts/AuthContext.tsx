@@ -31,12 +31,32 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [brand, setBrand] = useState<any | null>(null);
+  // Robust cache initialization
+  const [user, setUser] = useState<User | null>(() => {
+    try {
+      const raw = localStorage.getItem('mthunzi.auth.v1');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed?.user ?? null;
+    } catch {
+      return null;
+    }
+  });
+  const [brand, setBrand] = useState<any | null>(() => {
+    try {
+      const raw = localStorage.getItem('mthunzi.auth.v1');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed?.brand ?? null;
+    } catch {
+      return null;
+    }
+  });
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchProfileAndBrand = useCallback(async (userId: string) => {
+    let finished = false;
     try {
       // Fetch staff profile and join with brands table
       let { data: staff, error } = await supabase
@@ -75,7 +95,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      if (error) throw error;
+      if (error) {
+        setLoading(false);
+        finished = true;
+        throw error;
+      }
 
       if (staff) {
         // If this was the user's first time logging in and there's no brand yet,
@@ -98,16 +122,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           brand_id: staff.brand_id
         });
         setBrand(staff.brands || null);
+        setLoading(false);
+        finished = true;
+      } else {
+        setLoading(false);
+        finished = true;
       }
     } catch (err) {
+      setLoading(false);
+      finished = true;
       console.error("Error fetching profile:", err);
     } finally {
-      setLoading(false);
+      if (!finished) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     let mounted = true;
+    let timeoutId: any = null;
+
+    // Auth Safety Timeout
+    timeoutId = setTimeout(() => {
+      if (loading) setLoading(false);
+    }, 3000);
 
     // 1. Check active session on mount
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -136,6 +173,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       mounted = false;
       subscription.unsubscribe();
+      if (timeoutId) clearTimeout(timeoutId);
     };
   }, [fetchProfileAndBrand]);
 
