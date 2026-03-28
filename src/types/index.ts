@@ -46,17 +46,15 @@ export interface StockItem {
 // Stock Issue (Internal Transfer)
 export interface StockIssue {
   id: string;
-  issueNo: number;
   date: string;
-  originItemId?: string;
-  destinationItemId?: string;
-  originItemCode: string;
-  destinationItemCode: string;
-  wasQty: number;
-  issuedQty: number;
-  nowQty: number;
-  value: number;
-  createdBy: string;
+  stockItemId: string;
+  issueType: 'Wastage' | 'Expired' | 'Staff Meal' | 'Theft' | 'Damage';
+  qtyIssued: number; // stored in base unit
+  unitCostAtTime: number;
+  totalValueLost: number;
+  notes?: string | null;
+  createdBy: string | null;
+  createdAt?: string;
 }
 
 // Stock Movement

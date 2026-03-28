@@ -1,5 +1,4 @@
 import type { StockItem } from '@/types';
-import { stockItems as seededStockItems } from '@/data/mockData';
 import type { BatchProduction, Recipe } from '@/types';
 import { getPosMenuItems, upsertPosMenuItem } from '@/lib/posMenuStore';
 import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient';
@@ -54,7 +53,7 @@ function load(): StockItem[] {
     // ignore
   }
 
-  state = seededStockItems.map(s => ({ ...s }));
+  state = [];
   persist(state);
   return state;
 }
@@ -784,7 +783,8 @@ export function applyGRVReceiptToStock(params: {
 }
 
 export function resetStockToSeed() {
-  state = seededStockItems.map(s => ({ ...s }));
+  // Clear any local seed data; rely on remote DB or explicit adds.
+  state = [];
   persist(state);
   emit();
 }
