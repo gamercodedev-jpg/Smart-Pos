@@ -145,6 +145,56 @@ async function sendOrderToSupabase(order: Order) {
       console.error('[orderStore] failed to insert items into pos_order_items', itemsError);
       throw itemsError;
     }
+
+    // Persist invoice record for paid orders (one invoice per order)
+    if (order.status === 'paid' && currentBrandId) {
+      try {
+        const invoiceOrderId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(remoteOrderId)
+          ? remoteOrderId
+          : null;
+
+        let existingInvoice = null;
+
+        if (invoiceOrderId) {
+          const { data, error } = await supabase!
+            .from('invoices')
+            .select('id')
+            .eq('order_id', invoiceOrderId)
+            .maybeSingle();
+
+          if (error) {
+            console.warn('[orderStore] failed to check existing invoice', error);
+          } else {
+            existingInvoice = data;
+          }
+        }
+
+        if (!existingInvoice) {
+          const invoiceNumber = order.orderNo ? `INV-${order.orderNo}` : `INV-${Date.now()}`;
+
+          const { error: invoiceInsertError } = await supabase!.from('invoices').insert({
+            brand_id: currentBrandId,
+            order_id: invoiceOrderId,
+            invoice_number: invoiceNumber,
+            issued_at: new Date().toISOString(),
+            total: order.total,
+            status: 'issued',
+          });
+
+          if (invoiceInsertError) {
+            console.warn('[orderStore] failed to insert invoice', invoiceInsertError);
+          } else {
+            console.debug('[orderStore] invoice created', {
+              order_id: invoiceOrderId,
+              original_order_id: remoteOrderId,
+              invoice_number: invoiceNumber,
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('[orderStore] invoice write exception', e);
+      }
+    }
   } catch (e) {
     console.error('[orderStore] insert to pos_order_items failed', e);
     throw e;

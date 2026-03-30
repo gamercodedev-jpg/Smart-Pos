@@ -19,6 +19,12 @@ DECLARE
   order_types_json jsonb := '{}'::jsonb;
   variance_alerts_json jsonb := '[]'::jsonb;
   payment_breakdown_json jsonb := '{}'::jsonb;
+  cashier_shift_count integer := 0;
+  cashier_shift_closed_count integer := 0;
+  cashier_shift_opening_total numeric := 0;
+  cashier_shift_closing_total numeric := 0;
+  cashier_shift_variance_total numeric := 0;
+  cashier_shifts_by_staff jsonb := '[]'::jsonb;
   hours_per_day_json jsonb := '[]'::jsonb;
   invoices_count integer := 0;
   start_ts timestamp := (p_start_date::text || ' 00:00:00')::timestamp;
@@ -121,7 +127,60 @@ BEGIN
   )
   SELECT jsonb_object_agg(payment_method, total) INTO payment_breakdown_json FROM payments;
 
-  -- 9. Hours Per Day (Sales by hour)
+  -- 9. Cashier Shift Accountability (open + closed shifts in range)
+  WITH shift_rows AS (
+    SELECT
+      cs.staff_id,
+      coalesce(s.name, 'Unknown') AS staff_name,
+      cs.opening_cash,
+      cs.closing_cash,
+      cs.closed_at IS NOT NULL AS is_closed,
+      coalesce(cs.closing_cash, 0) AS safe_closing_cash,
+      coalesce(cs.closing_cash, 0) - cs.opening_cash AS variance_amount
+    FROM public.cashier_shifts cs
+    LEFT JOIN public.under_brand_staff s ON s.id = cs.staff_id
+    WHERE cs.brand_id = p_brand_id
+      AND (
+        (cs.opened_at >= start_ts AND cs.opened_at <= end_ts)
+        OR (cs.closed_at IS NOT NULL AND cs.closed_at >= start_ts AND cs.closed_at <= end_ts)
+      )
+  ), staff_shift_agg AS (
+    SELECT
+      staff_id,
+      staff_name,
+      count(*) AS shifts,
+      sum(CASE WHEN is_closed THEN 1 ELSE 0 END) AS closed_shifts,
+      coalesce(sum(opening_cash), 0) AS opening_cash,
+      coalesce(sum(safe_closing_cash), 0) AS closing_cash,
+      coalesce(sum(variance_amount), 0) AS total_variance
+    FROM shift_rows
+    GROUP BY staff_id, staff_name
+  )
+  SELECT
+    coalesce(sum(shifts), 0),
+    coalesce(sum(closed_shifts), 0),
+    coalesce(sum(opening_cash), 0),
+    coalesce(sum(closing_cash), 0),
+    coalesce(sum(total_variance), 0),
+    coalesce(jsonb_agg(jsonb_build_object(
+      'staff_id', staff_id,
+      'staff_name', staff_name,
+      'shifts', shifts,
+      'closed_shifts', closed_shifts,
+      'opening_cash', opening_cash,
+      'closing_cash', closing_cash,
+      'total_variance', total_variance
+    )), '[]'::jsonb)
+  INTO
+    cashier_shift_count,
+    cashier_shift_closed_count,
+    cashier_shift_opening_total,
+    cashier_shift_closing_total,
+    cashier_shift_variance_total,
+    cashier_shifts_by_staff
+  FROM staff_shift_agg;
+
+  -- 10. Hours Per Day (Sales by hour)
   WITH hours AS (
     SELECT
       extract(hour from o.paid_at) AS hour,
@@ -151,6 +210,12 @@ BEGIN
     'order_types', order_types_json,
     'variance_alerts', variance_alerts_json,
     'payment_breakdown', coalesce(payment_breakdown_json, '{}'::jsonb),
+    'cashier_shift_count', cashier_shift_count,
+    'cashier_shift_closed_count', cashier_shift_closed_count,
+    'cashier_shift_opening_total', cashier_shift_opening_total,
+    'cashier_shift_closing_total', cashier_shift_closing_total,
+    'cashier_shift_variance_total', cashier_shift_variance_total,
+    'cashier_shifts_by_staff', cashier_shifts_by_staff,
     'hours_per_day', coalesce(hours_per_day_json, '[]'::jsonb),
     'invoices_count', invoices_count
   );

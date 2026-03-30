@@ -65,6 +65,18 @@ export default function ReceiptPrintDialog(props: {
     window.print();
   };
 
+  useEffect(() => {
+    if (!open || !order || settings.autoPrint === false) return;
+    // Delay slightly to ensure the dialog has rendered and CSS applied.
+    const timer = window.setTimeout(() => {
+      window.print();
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [open, order, settings.autoPrint]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">

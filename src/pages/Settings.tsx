@@ -257,6 +257,18 @@ export default function Settings() {
             />
           </div>
 
+          <div className="flex items-center justify-between gap-4 px-1">
+            <div>
+              <div className="text-sm font-medium">Auto-print Receipt</div>
+              <div className="text-xs text-muted-foreground">If enabled, receipt will print automatically when shown.</div>
+            </div>
+            <Switch
+              checked={receiptSettings.autoPrint ?? true}
+              disabled={!hasPermission('manageSettings')}
+              onCheckedChange={(v) => setReceiptSettings((s) => ({ ...s, autoPrint: Boolean(v) }))}
+            />
+          </div>
+
           {!isZambia && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="space-y-1">

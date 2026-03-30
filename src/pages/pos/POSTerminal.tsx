@@ -1,11 +1,18 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { ShoppingCart, Send, Trash2, Plus, Minus, CreditCard, Users, Percent, Settings as SettingsIcon, RefreshCw, Wifi, BellRing, FolderOpen, LogOut } from 'lucide-react';
+import { ShoppingCart, Send, Trash2, Plus, Minus, CreditCard, Users, Percent, Settings as SettingsIcon, RefreshCw, Wifi, BellRing, FolderOpen, LogOut, MoreHorizontal } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { useAuth } from '@/contexts/AuthContext';
@@ -907,15 +914,17 @@ export default function POSTerminal() {
 
       const saved = upsertActiveOrder({ status: 'paid', paymentMethod: method, sent: true });
 
-      // Resolve any outstanding payment request for this order.
-      const req = paymentRequests.find((r) => r.orderId === saved.id);
-      if (req) resolvePosPaymentRequest(req.id);
-
       setReceiptOrder(saved);
       setShowReceipt(true);
 
       setShowPayment(false);
       clearOrder();
+
+      // Resolve payment requests in background so receipt appears immediately.
+      setTimeout(() => {
+        const req = paymentRequests.find((r) => r.orderId === saved.id);
+        if (req) resolvePosPaymentRequest(req.id);
+      }, 0);
     } catch (e) {
       setShowPayment(false);
       showDeductionError(e);
@@ -967,11 +976,49 @@ export default function POSTerminal() {
   return (
     <div className="h-screen p-3 pos-light">
       <div className="h-full rounded-2xl border bg-background overflow-auto lg:overflow-hidden overscroll-contain">
-        <div className="h-full grid grid-cols-1 lg:grid-cols-[4.5rem_1fr_26rem]">
+        <div className="h-full grid grid-cols-1 md:grid-cols-[4.5rem_1fr] lg:grid-cols-[4.5rem_1fr_22rem] xl:grid-cols-[4.5rem_1fr_26rem]">
           {/* Left icon rail (POS-like) */}
           <div className="hidden lg:flex flex-col items-center border-r bg-muted/30 py-3">
             <div className="w-12 h-12 rounded-xl border bg-background flex items-center justify-center font-bold">
               {settings.appName.slice(0, 1).toUpperCase()}
+            </div>
+
+            <div className="mt-3 w-full px-2">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="ghost" className="h-9 w-full justify-center">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-48">
+                  <div className="space-y-2">
+                    <div className="text-xs text-muted-foreground">{user?.name ?? 'Unknown'}</div>
+                    <div className="text-xs text-muted-foreground">{ROLE_NAMES[user?.role ?? 'guest'] ?? user?.role}</div>
+                    <div className="h-px bg-border" />
+                    <Button variant="ghost" className="w-full justify-start" onClick={openSettings}>
+                      <SettingsIcon className="h-4 w-4 mr-2" />
+                      Settings
+                    </Button>
+                    <Button variant="ghost" className="w-full justify-start" onClick={() => {
+                      if (isCashier && activeShiftId) {
+                        setShiftError(null);
+                        setClosingCash('');
+                        setCashierPin('');
+                        setConfirmEndShift(false);
+                        setShowEndShift(true);
+                        return;
+                      }
+                      void (async () => {
+                        await logout();
+                        navigate('/');
+                      })();
+                    }}>
+                      <LogOut className="h-4 w-4 mr-2" />
+                      Logout
+                    </Button>
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
 
             <div className="mt-2 flex-1" />
@@ -1078,18 +1125,10 @@ export default function POSTerminal() {
                   </PopoverContent>
                 </Popover>
               </div>
-              <div className="flex items-center gap-2">
-                {user ? (
-                  <div className="hidden md:flex items-center gap-2 mr-1">
-                    <Badge variant="secondary" className="max-w-[220px] truncate">
-                      {user.name}
-                    </Badge>
-                    <Badge variant="outline">{ROLE_NAMES[user.role] ?? user.role}</Badge>
-                  </div>
-                ) : null}
+              <div className="flex items-center gap-1 sm:gap-2">
                 <Button
                   variant="outline"
-                  className="hidden sm:inline-flex"
+                  className="h-10 w-10 sm:h-auto sm:w-auto"
                   title="Logout"
                   onClick={() => {
                     if (isCashier && activeShiftId) {
@@ -1107,7 +1146,8 @@ export default function POSTerminal() {
                     })();
                   }}
                 >
-                  <LogOut className="h-4 w-4 mr-2" /> Logout
+                  <LogOut className="h-4 w-4" />
+                  <span className="hidden xl:inline ml-2">Logout</span>
                 </Button>
                 <Button variant="outline" size="icon" title="Refresh" onClick={() => window.location.reload()}>
                   <RefreshCw className="h-4 w-4" />
@@ -1116,8 +1156,14 @@ export default function POSTerminal() {
                   <Wifi className={cn('h-4 w-4', isOnline ? 'text-emerald-500' : 'text-muted-foreground')} />
                 </Button>
 
-                <Button variant="outline" className="relative" title="Requests" onClick={() => setShowNotifications(true)}>
-                  <BellRing className="h-4 w-4 mr-2" /> Requests
+                <Button
+                  variant="outline"
+                  className="relative"
+                  title="Requests"
+                  onClick={() => setShowNotifications(true)}
+                >
+                  <BellRing className="h-4 w-4" />
+                  <span className="hidden lg:inline ml-2">Requests</span>
                   {posNotifs.length > 0 ? (
                     <span className="ml-2 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-destructive px-1 text-xs font-bold text-destructive-foreground">
                       {posNotifs.length}
@@ -1163,15 +1209,17 @@ export default function POSTerminal() {
                   </DialogContent>
                 </Dialog>
 
-                <Button variant="outline" onClick={() => setShowHeldOrders(true)} title="Resume held orders">
-                  <FolderOpen className="h-4 w-4 mr-2" /> Held
+                <Button variant="outline" className="relative" onClick={() => setShowHeldOrders(true)} title="Resume held orders">
+                  <FolderOpen className="h-4 w-4" />
+                  <span className="hidden lg:inline ml-2">Held</span>
                 </Button>
 
                 {/* Table picker */}
                 <Dialog open={showTableSelect} onOpenChange={setShowTableSelect}>
                   <DialogTrigger asChild>
-                    <Button className="h-10" variant="default">
-                      Select Table
+                    <Button className="h-10 min-w-[110px] text-xs sm:text-sm" variant="default">
+                      <span className="hidden sm:inline">Select Table</span>
+                      <span className="inline sm:hidden">Table</span>
                     </Button>
                   </DialogTrigger>
                   <DialogContent className="max-w-md">
@@ -1471,22 +1519,28 @@ export default function POSTerminal() {
               </DialogContent>
             </Dialog>
 
-            {/* Category tabs */}
+            {/* Category selector (responsive) */}
             <div className="border-b px-3 py-2">
-              <div className="flex flex-wrap gap-2">
-                {categoriesWithAll.map(cat => (
-                  <Button
-                    key={cat.id}
-                    variant={selectedCategory === cat.id ? 'default' : 'outline'}
-                    className={cn('h-9 rounded-full', selectedCategory === cat.id && cat.color)}
-                    onClick={() => {
-                      setSelectedCategory(cat.id);
-                      setSearchQuery('');
-                    }}
-                  >
-                    {cat.name}
-                  </Button>
-                ))}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm font-medium">Category</span>
+                <Select
+                  value={selectedCategory}
+                  onValueChange={(value) => {
+                    setSelectedCategory(value);
+                    setSearchQuery('');
+                  }}
+                >
+                  <SelectTrigger className="min-w-[150px]">
+                    <SelectValue placeholder="All" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categoriesWithAll.map((cat) => (
+                      <SelectItem key={cat.id} value={cat.id}>
+                        {cat.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
@@ -1514,7 +1568,7 @@ export default function POSTerminal() {
           </div>
 
           {/* Right: Cart */}
-          <div className="border-l bg-muted/20 flex flex-col min-h-0">
+          <div className="border-l bg-muted/20 flex flex-col min-h-0 w-full max-w-full lg:max-w-[22rem] xl:max-w-[26rem]">
         {/* Order Header */}
         <div className="p-3 border-b bg-background/50">
           <div className="flex items-center justify-between mb-2">

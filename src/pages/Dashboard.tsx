@@ -350,7 +350,69 @@ export default function Dashboard() {
           })()}
           icon={<Clock className="h-4 w-4 text-muted-foreground" />}
         />
+        <KPICard
+          title="Shift Closed"
+          value={Number(dbSnapshot?.cashierShiftClosedCount ?? 0)}
+          loading={isLoading}
+          subtitle={`Total shifts: ${Number(dbSnapshot?.cashierShiftCount ?? 0)}`}
+          icon={<Users className="h-4 w-4 text-muted-foreground" />}
+        />
+        <KPICard
+          title="Open Shifts"
+          value={
+            Number(dbSnapshot?.cashierShiftCount ?? 0) - Number(dbSnapshot?.cashierShiftClosedCount ?? 0)
+          }
+          loading={isLoading}
+          subtitle="Open shifts currently"
+          icon={<Clock className="h-4 w-4 text-muted-foreground" />}
+        />
+        <KPICard
+          title="Cashier Overage/Short"
+          value={formatMoneyPrecise(Number(dbSnapshot?.cashierShiftVarianceTotal ?? 0), 2)}
+          loading={isLoading}
+          subtitle={`Opening: ${formatMoneyPrecise(Number(dbSnapshot?.cashierShiftOpeningTotal ?? 0), 2)} · Closing: ${formatMoneyPrecise(Number(dbSnapshot?.cashierShiftClosingTotal ?? 0), 2)}`}
+          variant={Number(dbSnapshot?.cashierShiftVarianceTotal ?? 0) >= 0 ? 'success' : 'danger'}
+          icon={<DollarSign className="h-4 w-4 text-muted-foreground" />}
+        />
       </div>
+
+      <Card className="mthunzi-card mb-6">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base font-medium">Cashier Shift Accounts</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {Array.isArray(dbSnapshot?.cashierShiftsByStaff) && dbSnapshot.cashierShiftsByStaff.length > 0 ? (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-b-white/10">
+                    <TableHead>Cashier</TableHead>
+                    <TableHead className="text-right">Shifts</TableHead>
+                    <TableHead className="text-right">Opening Cash</TableHead>
+                    <TableHead className="text-right">Closing Cash</TableHead>
+                    <TableHead className="text-right">Variance</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {dbSnapshot.cashierShiftsByStaff.map((item: any) => (
+                    <TableRow key={item.staff_id} className="border-b-white/10">
+                      <TableCell className="font-medium">{item.staff_name}</TableCell>
+                      <TableCell className="text-right">{Number(item.shifts || 0)}</TableCell>
+                      <TableCell className="text-right">{formatMoneyPrecise(Number(item.opening_cash || 0), 2)}</TableCell>
+                      <TableCell className="text-right">{formatMoneyPrecise(Number(item.closing_cash || 0), 2)}</TableCell>
+                      <TableCell className="text-right">{formatMoneyPrecise(Number(item.total_variance || 0), 2)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <div className="rounded-md border border-white/10 bg-white/5 p-3 text-sm text-muted-foreground">
+              No closed cashier shifts found for this period.
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         {/* Payment Breakdown */}

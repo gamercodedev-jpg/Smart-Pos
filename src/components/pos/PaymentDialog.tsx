@@ -11,7 +11,7 @@ interface PaymentDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   total: number;
-  onComplete: (method: PaymentMethod) => void;
+  onComplete: (method: PaymentMethod) => Promise<void>;
 }
 
 const PAYMENT_METHODS = [
@@ -28,18 +28,24 @@ export default function PaymentDialog({ open, onOpenChange, total, onComplete }:
   const [selectedMethod, setSelectedMethod] = useState<PaymentMethod | null>(null);
   const [cashReceived, setCashReceived] = useState<string>('');
   const [reference, setReference] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
   
   const cashAmount = parseFloat(cashReceived) || 0;
   const change = cashAmount - total;
   
-  const handleComplete = () => {
+  const handleComplete = async () => {
     if (!selectedMethod) return;
     if (selectedMethod === 'cash' && cashAmount < total) return;
-    onComplete(selectedMethod);
-    // Reset state
-    setSelectedMethod(null);
-    setCashReceived('');
-    setReference('');
+
+    setIsProcessing(true);
+    try {
+      await onComplete(selectedMethod);
+      setSelectedMethod(null);
+      setCashReceived('');
+      setReference('');
+    } finally {
+      setIsProcessing(false);
+    }
   };
   
   const handleQuickAmount = (amount: number) => {
@@ -150,12 +156,16 @@ export default function PaymentDialog({ open, onOpenChange, total, onComplete }:
         {/* Complete Button */}
         <Button
           className="w-full h-14 text-lg"
-          disabled={!selectedMethod || (selectedMethod === 'cash' && cashAmount < total)}
+          disabled={isProcessing || !selectedMethod || (selectedMethod === 'cash' && cashAmount < total)}
           onClick={handleComplete}
         >
           <Check className="h-5 w-5 mr-2" />
-          Complete Payment
+          {isProcessing ? 'Processing payment...' : 'Complete Payment'}
         </Button>
+
+        {isProcessing && (
+          <div className="mt-3 text-sm text-center text-muted-foreground">Please wait, printing receipt is on the way.</div>
+        )}
       </DialogContent>
     </Dialog>
   );

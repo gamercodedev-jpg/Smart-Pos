@@ -182,6 +182,12 @@ export async function fetchDashboardStatsFromDb(brandId: string, startDate: stri
     if (!raw) return null;
     return {
       ...raw,
+      cashierShiftCount: Number(raw.cashier_shift_count ?? 0),
+      cashierShiftClosedCount: Number(raw.cashier_shift_closed_count ?? 0),
+      cashierShiftOpeningTotal: Number(raw.cashier_shift_opening_total ?? 0),
+      cashierShiftClosingTotal: Number(raw.cashier_shift_closing_total ?? 0),
+      cashierShiftVarianceTotal: Number(raw.cashier_shift_variance_total ?? 0),
+      cashierShiftsByStaff: Array.isArray(raw.cashier_shifts_by_staff) ? raw.cashier_shifts_by_staff : [],
       staffRows: Array.isArray(raw.staff_performance)
         ? raw.staff_performance.map((row: any) => ({
             name: row.name,
