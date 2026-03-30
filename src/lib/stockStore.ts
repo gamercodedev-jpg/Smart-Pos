@@ -147,6 +147,31 @@ export function subscribeStockItems(listener: Listener) {
   };
 }
 
+// Realtime subscription helper: listen for stock_items changes and refresh
+// local inventory when events arrive. Returns a cleanup function.
+export function subscribeToRealtimeStockItems(): (() => void) | null {
+  try {
+    if (!isSupabaseConfigured() || !supabase) return null;
+    const brandId = currentBrandId;
+    if (!brandId) return null;
+    const channel = (supabase as any).channel(`stock-items.${brandId}`);
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'stock_items', filter: `brand_id=eq.${brandId}` }, async () => {
+      try {
+        await fetchFromDb();
+      } catch (e) {
+        console.warn('[stockStore] realtime handler failed to refresh stock items', e);
+      }
+    });
+    channel.subscribe();
+    return () => {
+      try { if ((supabase as any).removeChannel) (supabase as any).removeChannel(channel); } catch {}
+    };
+  } catch (e) {
+    console.warn('[stockStore] subscribeToRealtimeStockItems failed', e);
+    return null;
+  }
+}
+
 export function getStockItemsSnapshot(): StockItem[] {
   return load();
 }

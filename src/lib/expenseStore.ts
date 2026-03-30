@@ -1,5 +1,7 @@
 import type { Expense, ExpenseCategory } from '@/types';
 import { logSensitiveAction } from '@/lib/systemAuditLog';
+import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient';
+import { getActiveBrandId, subscribeActiveBrandId } from '@/lib/activeBrand';
 
 const STORAGE_KEY = 'mthunzi.expenses.v1';
 
@@ -12,6 +14,14 @@ type Listener = () => void;
 
 const listeners = new Set<Listener>();
 let cached: ExpenseStateV1 | null = null;
+let currentBrandId: string | null = getActiveBrandId();
+
+// Reset cached expenses when brand changes to prevent cross-brand bleed.
+subscribeActiveBrandId(() => {
+  currentBrandId = getActiveBrandId();
+  cached = null;
+  emit();
+});
 
 function emit() {
   for (const l of listeners) l();
@@ -153,4 +163,53 @@ export function deleteExpense(expenseId: string) {
 
 export function resetExpenses() {
   save({ version: 1, expenses: [] });
+}
+
+// Refresh expenses from DB (brand-scoped). Writes into local cache and emits.
+export async function refreshExpensesFromDb() {
+  try {
+    if (!isSupabaseConfigured() || !supabase) return;
+    const brandId = currentBrandId;
+    if (!brandId) return;
+    const { data, error } = await supabase.from('expenses').select('*').eq('brand_id', brandId).order('date', { ascending: false }).limit(1000);
+    if (error) {
+      console.warn('[expenseStore] refreshExpensesFromDb error', error);
+      return;
+    }
+    const rows = Array.isArray(data) ? data : [];
+    const parsed = rows.map((r: any) => ({
+      id: String(r.id ?? `exp-${crypto.randomUUID()}`),
+      date: String(r.date ?? ''),
+      category: String(r.category ?? 'other') as ExpenseCategory,
+      amount: Number(r.amount ?? 0),
+      description: r.description ?? undefined,
+      createdAt: r.created_at ?? new Date().toISOString(),
+    }));
+    save({ version: 1, expenses: parsed });
+  } catch (e) {
+    console.warn('[expenseStore] refreshExpensesFromDb exception', e);
+  }
+}
+
+// Realtime subscription helper: listen to expenses table changes for active brand
+// and refresh local cache when events arrive. Returns a cleanup function.
+export function subscribeToRealtimeExpenses(): (() => void) | null {
+  try {
+    if (!isSupabaseConfigured() || !supabase) return null;
+    const brandId = currentBrandId;
+    if (!brandId) return null;
+    const channel = (supabase as any).channel(`expenses.${brandId}`);
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'expenses', filter: `brand_id=eq.${brandId}` }, async () => {
+      try {
+        await refreshExpensesFromDb();
+      } catch (e) {
+        console.warn('[expenseStore] realtime handler failed', e);
+      }
+    });
+    channel.subscribe();
+    return () => { try { if ((supabase as any).removeChannel) (supabase as any).removeChannel(channel); } catch {} };
+  } catch (e) {
+    console.warn('[expenseStore] subscribeToRealtimeExpenses failed', e);
+    return null;
+  }
 }

@@ -422,6 +422,7 @@ export type SensitiveActionType =
   | 'manager_override'
   | 'order_open'
   | 'order_close'
+  | 'order_started'
   | 'security_alert'
   | 'order_paid'
   | 'order_sent'

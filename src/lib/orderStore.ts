@@ -695,8 +695,8 @@ export async function fetchAndReplaceOrdersFromSupabase() {
         orderNo: Number(orderRow.order_no) || 0,
         tableId: orderRow.table_no ? `t${orderRow.table_no}` : undefined,
         tableNo: orderRow.table_no ?? undefined,
-        orderType: orderRow.order_type,
-        status: orderRow.status,
+        orderType: orderRow.order_type as OrderType,
+        status: orderRow.status as OrderStatus,
         staffId: String(orderRow.staff_id ?? ''),
         staffName: orderRow.staff_name ?? '',
         items: itemsNormalized,
@@ -723,5 +723,48 @@ export async function fetchAndReplaceOrdersFromSupabase() {
     save({ version: 1, orders: merged });
   } catch (e) {
     console.warn('[orderStore] fetchAndReplaceOrdersFromSupabase error', e);
+  }
+}
+
+// Realtime subscription helper: listen for pos_orders/pos_order_items changes
+// and refresh local orders when events arrive. Returns a cleanup function.
+export function subscribeToRealtimeOrders(): (() => void) | null {
+  try {
+    if (!supabase) return null;
+    const brandId = currentBrandId;
+    if (!brandId) return null;
+    const channelName = `orders-channel.${brandId}`;
+    const channel = (supabase as any).channel(channelName);
+
+    // Listen to changes on pos_orders and pos_order_items for this brand
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'pos_orders', filter: `brand_id=eq.${brandId}` }, async (payload: any) => {
+      try {
+        // best-effort: refetch relevant orders from Supabase
+        await fetchAndReplaceOrdersFromSupabase();
+      } catch (e) {
+        console.warn('[orderStore] realtime handler failed to refresh orders', e);
+      }
+    });
+
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'pos_order_items', filter: `brand_id=eq.${brandId}` }, async (payload: any) => {
+      try {
+        await fetchAndReplaceOrdersFromSupabase();
+      } catch (e) {
+        console.warn('[orderStore] realtime handler failed to refresh order items', e);
+      }
+    });
+
+    channel.subscribe();
+
+    return () => {
+      try {
+        if ((supabase as any).removeChannel) (supabase as any).removeChannel(channel);
+      } catch (e) {
+        // ignore
+      }
+    };
+  } catch (e) {
+    console.warn('[orderStore] subscribeToRealtimeOrders failed', e);
+    return null;
   }
 }
