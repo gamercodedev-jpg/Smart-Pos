@@ -1,4 +1,4 @@
-import { useMemo, useState, useSyncExternalStore } from 'react';
+import React, { useMemo, useState, useSyncExternalStore, useEffect } from 'react';
 import { ArrowRight, Calendar, Check, ChevronsUpDown, Plus, Search } from 'lucide-react';
 
 import { PageHeader, DataTableWrapper, NumericCell } from '@/components/common/PageComponents';
@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   Command,
@@ -36,19 +37,28 @@ import { toast } from '@/components/ui/use-toast';
 
 import type { StockItem } from '@/types';
 import { getStockItemsSnapshot, subscribeStockItems } from '@/lib/stockStore';
+import { useCurrency } from '@/contexts/CurrencyContext';
 import {
   createStockIssue,
   getStockIssuesSnapshot,
   StockIssueError,
   subscribeStockIssues,
+  subscribeStockIssuesLoading,
+  getStockIssuesLoadingSnapshot,
+  ensureStockIssuesLoaded,
 } from '@/lib/stockIssueStore';
+import { getActiveBrandId } from '@/lib/activeBrand';
+import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
+import { getStockItemById } from '@/lib/stockStore';
 
 type DraftIssueLine = {
   id: string;
-  originItemId: string;
-  destinationItemId: string;
-  qty: string;
+  stockItemId: string;
+  qty: string; // user-entered qty in inputUnit
+  inputUnit?: string; // e.g., 'kg','g','l','ml','each','pack'
+  issueType?: 'Wastage' | 'Expired' | 'Staff Meal' | 'Theft' | 'Damage';
+  notes?: string;
 };
 
 function StockItemPicker(props: {
@@ -72,7 +82,7 @@ function StockItemPicker(props: {
           className={cn('w-full justify-between', !selected && 'text-muted-foreground')}
           disabled={props.disabled}
         >
-          {selected ? `${selected.code} - ${selected.name} (Stock: ${selected.currentStock})` : props.placeholder}
+          {selected ? `${selected.code} - ${selected.name} (Stock: ${Number.isFinite(selected.currentStock) ? selected.currentStock.toFixed(2) : selected.currentStock} ${baseUnitLabel(selected.unitType)})` : props.placeholder}
           <ChevronsUpDown className="ml-2 h-4 w-4 opacity-60" />
         </Button>
       </PopoverTrigger>
@@ -93,7 +103,7 @@ function StockItemPicker(props: {
                 >
                   <Check className={cn('mr-2 h-4 w-4', props.value === item.id ? 'opacity-100' : 'opacity-0')} />
                   <span className="truncate">{item.code} - {item.name}</span>
-                  <span className="ml-auto text-xs text-muted-foreground">Stock: {item.currentStock}</span>
+                  <span className="ml-auto text-xs text-muted-foreground">Stock: {Number.isFinite(item.currentStock) ? item.currentStock.toFixed(2) : item.currentStock} {baseUnitLabel(item.unitType)}</span>
                 </CommandItem>
               ))}
             </CommandGroup>
@@ -104,6 +114,13 @@ function StockItemPicker(props: {
   );
 }
 
+function baseUnitLabel(unitType: any) {
+  if (unitType === 'KG') return 'kg';
+  if (unitType === 'LTRS') return 'l';
+  if (unitType === 'PACK') return 'pack';
+  return 'each';
+}
+
 function dateKeyLocal(d: Date) {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -112,16 +129,34 @@ function dateKeyLocal(d: Date) {
 }
 
 export default function StockIssues() {
+    const { formatMoneyPrecise } = useCurrency();
   const stockItems = useSyncExternalStore(subscribeStockItems, getStockItemsSnapshot);
   const issues = useSyncExternalStore(subscribeStockIssues, getStockIssuesSnapshot);
+  const loading = useSyncExternalStore(subscribeStockIssuesLoading, getStockIssuesLoadingSnapshot);
 
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [issueDate, setIssueDate] = useState<string>(dateKeyLocal(new Date()));
   const [createdBy, setCreatedBy] = useState('System');
+  const { user: authUser, allUsers } = useAuth();
+  const currentUserId = authUser?.id ?? null;
+  const currentUserFullName = authUser?.name ?? authUser?.email ?? '';
+
+  useEffect(() => {
+    setCreatedBy(currentUserFullName || 'System');
+  }, [currentUserFullName]);
+
+  const userNameById = React.useMemo(() => {
+    const m = new Map<string, string>();
+    for (const u of allUsers ?? []) {
+      if (u?.id) m.set(u.id, u.name ?? '');
+    }
+    return m;
+  }, [allUsers]);
   const [search, setSearch] = useState('');
 
   const [draftLines, setDraftLines] = useState<DraftIssueLine[]>(() => [
-    { id: `dl-${crypto.randomUUID()}`, originItemId: '', destinationItemId: '', qty: '' },
+    { id: `dl-${crypto.randomUUID()}`, stockItemId: '', qty: '', inputUnit: undefined, issueType: 'Wastage', notes: '' },
   ]);
 
   const storeItems = useMemo(() => {
@@ -134,37 +169,76 @@ export default function StockIssues() {
     return dept.length ? dept : stockItems;
   }, [stockItems]);
 
+  function round2(n: number) {
+    return Math.round((n + Number.EPSILON) * 100) / 100;
+  }
+
+  
+
+  function allowedInputUnits(unitType: any, itemsPerPack?: number) {
+    if (unitType === 'KG') return ['kg', 'g'];
+    if (unitType === 'LTRS') return ['l', 'ml'];
+    if (unitType === 'PACK') return itemsPerPack && itemsPerPack > 0 ? ['pack', 'each'] : ['pack'];
+    return ['each'];
+  }
+
+  function toBaseQuantity(params: { qty: number; inputUnit: string; unitType: any; itemsPerPack?: number }) {
+    const qty = Number.isFinite(params.qty) ? params.qty : 0;
+    const inputUnit = String(params.inputUnit || '').toLowerCase();
+
+    if (params.unitType === 'KG') {
+      if (inputUnit === 'g') return round2(qty / 1000);
+      return round2(qty);
+    }
+
+    if (params.unitType === 'LTRS') {
+      if (inputUnit === 'ml') return round2(qty / 1000);
+      return round2(qty);
+    }
+
+    if (params.unitType === 'PACK') {
+      if (inputUnit === 'each') {
+        const n = Number(params.itemsPerPack ?? 0);
+        if (!n || n <= 0) return 0;
+        return round2(qty / n);
+      }
+      return round2(qty);
+    }
+
+    return round2(qty);
+  }
+
   const validated = useMemo(() => {
     const eps = 1e-9;
     const lines = draftLines.map((l) => {
-      const origin = stockItems.find((s) => s.id === l.originItemId) ?? null;
-      const dest = stockItems.find((s) => s.id === l.destinationItemId) ?? null;
+      const item = stockItems.find((s) => s.id === l.stockItemId) ?? null;
       const qtyRaw = Number(l.qty);
       const qty = Number.isFinite(qtyRaw) ? qtyRaw : 0;
-      const touched = Boolean(l.originItemId || l.destinationItemId || (l.qty && l.qty.trim()));
+      const touched = Boolean(l.stockItemId || (l.qty && l.qty.trim()));
+
+      const inputUnit = l.inputUnit ?? (item ? baseUnitLabel(item.unitType) : 'each');
+      const baseQty = item ? toBaseQuantity({ qty, inputUnit, unitType: item.unitType, itemsPerPack: item.itemsPerPack }) : 0;
 
       const errors: string[] = [];
       if (touched) {
-        if (!origin) errors.push('Select an origin item.');
-        if (!dest) errors.push('Select a destination item.');
+        if (!item) errors.push('Select an item.');
         if (!(qty > 0)) errors.push('Enter an issue quantity > 0.');
-        if (origin && dest && origin.id === dest.id) errors.push('Origin and destination cannot be the same item.');
-        if (origin && dest && origin.unitType !== dest.unitType) errors.push(`Unit mismatch: ${origin.unitType} → ${dest.unitType}.`);
-        if (origin) {
-          const onHand = Number.isFinite(origin.currentStock) ? origin.currentStock : 0;
-          if (qty > onHand + eps) errors.push(`Insufficient stock (on hand: ${onHand}).`);
+        if (item) {
+          const onHand = Number.isFinite(item.currentStock) ? item.currentStock : 0;
+          if (baseQty > onHand + eps) errors.push(`Insufficient stock (on hand: ${onHand}).`);
         }
+        // Notes are optional now; do not force entry for Theft/Damage.
       }
 
       const ok = touched ? errors.length === 0 : false;
-      return { ...l, origin, dest, qty, touched, ok, errors };
+      return { ...l, item, qty, inputUnit, baseQty, touched, ok, errors } as any;
     });
 
     const validLines = lines.filter((l) => l.ok);
     const invalidTouchedLines = lines.filter((l) => l.touched && !l.ok);
     const totalValue = validLines.reduce((sum, l) => {
-      const unitCost = l.origin && Number.isFinite(l.origin.currentCost) ? l.origin.currentCost : 0;
-      return sum + l.qty * unitCost;
+      const unitCost = l.item && Number.isFinite(l.item.currentCost) ? l.item.currentCost : 0;
+      return sum + l.baseQty * unitCost;
     }, 0);
 
     return {
@@ -177,71 +251,120 @@ export default function StockIssues() {
   }, [draftLines, stockItems]);
 
   const issueGroups = useMemo(() => {
-    const grouped = new Map<
-      number,
-      { issueNo: number; date: string; createdBy: string; items: typeof issues; totalValue: number }
-    >();
+    // Group stock_issue rows that belong to the same RPC batch by createdAt + createdBy
+    const all = (issues || []).slice().sort((a, b) => {
+      const ta = a.createdAt ?? a.created_at ?? a.date ?? '';
+      const tb = b.createdAt ?? b.created_at ?? b.date ?? '';
+      return String(tb).localeCompare(String(ta));
+    });
 
-    for (const issue of issues) {
-      const existing = grouped.get(issue.issueNo) ?? {
-        issueNo: issue.issueNo,
-        date: issue.date,
-        createdBy: issue.createdBy,
-        items: [],
-        totalValue: 0,
-      };
-      existing.items = [...existing.items, issue];
-      existing.totalValue = (existing.totalValue ?? 0) + (Number.isFinite(issue.value) ? issue.value : 0);
-      grouped.set(issue.issueNo, existing);
+    // bucket by key
+    const groups = new Map<string, any>();
+    for (const r of all) {
+      const createdAt = String(r.createdAt ?? r.created_at ?? r.date ?? '');
+      const createdById = String(r.createdBy ?? r.created_by ?? '');
+      const key = `${createdById}::${createdAt}`;
+      if (!groups.has(key)) groups.set(key, { key, createdAt, createdById, lines: [] as any[] });
+      groups.get(key).lines.push(r);
     }
 
-    const all = Array.from(grouped.values()).sort((a, b) => b.issueNo - a.issueNo);
     const q = search.trim().toLowerCase();
-    if (!q) return all;
-
-    return all.filter((g) => {
-      if (String(g.issueNo).includes(q)) return true;
-      if (String(g.createdBy).toLowerCase().includes(q)) return true;
-      if (String(g.date).toLowerCase().includes(q)) return true;
-      return g.items.some((it) =>
-        `${it.originItemCode} ${it.destinationItemCode}`.toLowerCase().includes(q)
-      );
+    const out = Array.from(groups.values()).map((g) => {
+      // compute group metadata
+      const totalValue = g.lines.reduce((s: number, l: any) => s + Number(l.totalValueLost ?? l.total_value_lost ?? 0), 0);
+      const first = g.lines[0];
+      return {
+        key: g.key,
+        createdAt: g.createdAt,
+        createdById: g.createdById,
+        totalValue,
+        lines: g.lines,
+        first,
+      };
+    }).filter((grp) => {
+      if (!q) return true;
+      // match if any line matches
+      return grp.lines.some((it: any) => {
+        const item = getStockItemById(it.stockItemId);
+        const code = item?.code ?? '';
+        const name = item?.name ?? '';
+        const date = String(it.createdAt ?? it.created_at ?? it.date ?? '');
+        const creatorName = userNameById.get(String(it.createdBy ?? it.created_by ?? '')) ?? String(it.createdBy ?? it.created_by ?? '');
+        return (`${code} ${name}`.toLowerCase().includes(q)) || date.toLowerCase().includes(q) || creatorName.toLowerCase().includes(q);
+      });
     });
-  }, [issues, search]);
+
+    return out;
+  }, [issues, search, userNameById]);
 
   function resetDialog() {
-    setDraftLines([{ id: `dl-${crypto.randomUUID()}`, originItemId: '', destinationItemId: '', qty: '' }]);
+    setDraftLines([{ id: `dl-${crypto.randomUUID()}`, stockItemId: '', qty: '', inputUnit: undefined, issueType: 'Wastage', notes: '' }]);
     setCreatedBy('System');
     setIssueDate(dateKeyLocal(new Date()));
   }
 
+  // Trigger initial load on mount; loading state comes from the store.
+  useEffect(() => {
+    void ensureStockIssuesLoaded();
+  }, []);
+
   function addLine() {
-    setDraftLines((prev) => [...prev, { id: `dl-${crypto.randomUUID()}`, originItemId: '', destinationItemId: '', qty: '' }]);
+    setDraftLines((prev) => [...prev, { id: `dl-${crypto.randomUUID()}`, stockItemId: '', qty: '', inputUnit: undefined, issueType: 'Wastage', notes: '' }]);
   }
 
   function removeLine(id: string) {
     setDraftLines((prev) => prev.filter((l) => l.id !== id));
   }
 
-  function confirmIssue() {
+  async function confirmIssue() {
     if (!validated.canConfirm) return;
+    const brandId = getActiveBrandId();
+    const payloadLines = validated.validLines.map((l: any) => {
+      const unitCost = l.item?.currentCost ?? 0;
+      const totalValue = Math.round((Number(l.baseQty ?? 0) * unitCost + Number.EPSILON) * 100) / 100;
+      return {
+        id: l.id ?? `iss-${crypto.randomUUID()}`,
+        stock_item_id: l.stockItemId,
+        issue_type: l.issueType,
+        qty_issued: l.baseQty,
+        unit_cost_at_time: unitCost,
+        total_value_lost: totalValue,
+        notes: l.notes ?? null,
+      };
+    });
 
+    setIsSaving(true);
     try {
-      const res = createStockIssue({
+      if (!currentUserId) {
+        toast({ title: 'No active user', description: 'Select an operator before submitting.', variant: 'destructive' });
+        return;
+      }
+      await createStockIssue({
+        brandId: brandId,
         date: issueDate,
-        createdBy: createdBy.trim() || 'System',
-        lines: validated.validLines.map((l) => ({ originItemId: l.originItemId, destinationItemId: l.destinationItemId, qty: l.qty })),
-      });
+        createdBy: currentUserId,
+        lines: payloadLines,
+      } as any);
 
-      toast({ title: 'Stock issued', description: `Issue #${res.issueNo} saved and stock updated.` });
+      toast({ title: 'Stock issued', description: `Saved ${payloadLines.length} issue(s).` });
       setIsAddDialogOpen(false);
       resetDialog();
     } catch (e) {
-      const msg =
-        e instanceof StockIssueError
-          ? e.message
-          : (e as Error)?.message ?? 'Failed to create issue.';
-      toast({ title: 'Cannot issue stock', description: msg, variant: 'destructive' });
+      const msg = e instanceof StockIssueError ? e.message : (e as Error)?.message ?? 'Failed to create issue.';
+      // Specific handling for DB-reported insufficiency (user-friendly toast)
+      if (/insufficient stock|insufficient|low stock/i.test(String(msg))) {
+        toast({ title: 'Insufficient stock', description: msg, variant: 'destructive' });
+      } else if (/42501|permission|forbid|forbidden|403/i.test(String(msg))) {
+        toast({
+          title: 'Permission denied',
+          description: 'Cannot modify stock directly. Ensure the `process_stock_issue` RPC is available and run the debug steps in cd.md.',
+          variant: 'destructive',
+        });
+      } else {
+        toast({ title: 'Cannot issue stock', description: msg, variant: 'destructive' });
+      }
+    } finally {
+      setIsSaving(false);
     }
   }
 
@@ -249,7 +372,7 @@ export default function StockIssues() {
     <div>
       <PageHeader
         title="Stock Issues"
-        description="Record internal stock transfers from Main Store to Departments"
+        description="Record internal stock transfers from Main Store to Categories"
         actions={
           <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
             <DialogTrigger asChild>
@@ -258,11 +381,23 @@ export default function StockIssues() {
                 New Issue
               </Button>
             </DialogTrigger>
-            <DialogContent className="sm:max-w-[600px]">
+            <DialogContent className="sm:max-w-[600px] max-h-[80vh] overflow-auto">
               <DialogHeader>
                 <DialogTitle>Create Stock Issue</DialogTitle>
-                <DialogDescription>Transfer stock from Main Store to a Department</DialogDescription>
+                <DialogDescription>Transfer stock from Main Store to a Category</DialogDescription>
               </DialogHeader>
+
+              {validated.invalidTouchedLines.length ? (
+                <div className="p-3 bg-destructive/5 border border-destructive/10 rounded-md mb-2">
+                  <p className="text-sm font-medium text-destructive">Fix the following errors before saving:</p>
+                  <ul className="mt-2 text-sm text-destructive list-disc list-inside">
+                    {validated.invalidTouchedLines.map((ln) => {
+                      const idx = draftLines.findIndex(d => d.id === ln.id);
+                      return <li key={ln.id}>Line {idx + 1}: {ln.errors?.[0] ?? 'Invalid'}</li>;
+                    })}
+                  </ul>
+                </div>
+              ) : null}
 
               <div className="grid gap-6 py-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -280,29 +415,32 @@ export default function StockIssues() {
                     <Input
                       id="createdBy"
                       value={createdBy}
-                      onChange={(e) => setCreatedBy(e.target.value)}
+                      disabled
                     />
                   </div>
                 </div>
 
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <Label>Issue Lines</Label>
+                    <div>
+                      <Label>Issue Lines</Label>
+                      <p className="text-xs text-muted-foreground">You can add multiple products — each will be saved as its own issue. Notes are optional.</p>
+                    </div>
                     <Button type="button" variant="outline" size="sm" onClick={addLine}>
-                      <Plus className="h-4 w-4 mr-2" /> Add line
+                      <Plus className="h-4 w-4 mr-2" /> Add another item
                     </Button>
                   </div>
 
                   <div className="space-y-3">
                     {draftLines.map((l, idx) => {
-                      const origin = stockItems.find((s) => s.id === l.originItemId) ?? null;
-                      const dest = stockItems.find((s) => s.id === l.destinationItemId) ?? null;
+                      const item = stockItems.find((s) => s.id === l.stockItemId) ?? null;
                       const qty = Number(l.qty);
                       const qtyNum = Number.isFinite(qty) ? qty : 0;
+                      const inputUnit = l.inputUnit ?? (item ? baseUnitLabel(item.unitType) : 'each');
+                      const unitOptions = item ? allowedInputUnits(item.unitType, item.itemsPerPack) : ['each'];
 
-                      const destOptions = origin
-                        ? departmentItems.filter((d) => d.unitType === origin.unitType)
-                        : departmentItems;
+                      const validatedLine = validated.lines.find((x) => x.id === l.id) as any;
+                      const invalid = Boolean(validatedLine?.touched && !validatedLine?.ok);
 
                       return (
                         <Card key={l.id} className="bg-muted/30">
@@ -316,79 +454,86 @@ export default function StockIssues() {
                               ) : null}
                             </div>
 
-                            <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] gap-3 items-end">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                               <div className="space-y-2">
-                                <Label>Origin (Main Store)</Label>
+                                <Label>Item</Label>
                                 <StockItemPicker
-                                  value={l.originItemId}
-                                  onChange={(v) => {
-                                    setDraftLines((prev) =>
-                                      prev.map((x) => {
-                                        if (x.id !== l.id) return x;
-                                        const nextOrigin = stockItems.find((s) => s.id === v) ?? null;
-                                        const currentDest = stockItems.find((s) => s.id === x.destinationItemId) ?? null;
-                                        const destOk = nextOrigin && currentDest ? nextOrigin.unitType === currentDest.unitType : true;
-                                        return { ...x, originItemId: v, destinationItemId: destOk ? x.destinationItemId : '' };
-                                      })
-                                    );
-                                  }}
-                                  items={storeItems}
-                                  placeholder="Select store item"
+                                  value={l.stockItemId}
+                                  onChange={(v) => setDraftLines((prev) => prev.map((x) => (x.id === l.id ? { ...x, stockItemId: v } : x)))}
+                                  items={stockItems}
+                                  placeholder="Select item"
                                 />
                               </div>
 
-                              <div className="hidden sm:flex justify-center pb-2">
-                                <ArrowRight className="h-5 w-5 text-muted-foreground" />
-                              </div>
-
                               <div className="space-y-2">
-                                <Label>Destination (Department)</Label>
-                                <StockItemPicker
-                                  value={l.destinationItemId}
-                                  onChange={(v) => setDraftLines((prev) => prev.map((x) => (x.id === l.id ? { ...x, destinationItemId: v } : x)))}
-                                  items={destOptions}
-                                  placeholder={origin ? `Select ${origin.unitType} item` : 'Select department item'}
-                                  disabled={destOptions.length === 0}
-                                />
-                                {origin ? (
-                                  <div className="text-xs text-muted-foreground">Destination list filtered to unit: {origin.unitType}</div>
-                                ) : null}
+                                <Label>Issue Type</Label>
+                                <Select value={l.issueType ?? 'Wastage'} onValueChange={(v) => setDraftLines((prev) => prev.map((x) => (x.id === l.id ? { ...x, issueType: v as any } : x)))}>
+                                  <SelectTrigger className={cn('h-9 w-full', invalid && 'border-destructive')}>
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="Wastage">Wastage</SelectItem>
+                                    <SelectItem value="Expired">Expired</SelectItem>
+                                    <SelectItem value="Staff Meal">Staff Meal</SelectItem>
+                                    <SelectItem value="Theft">Theft</SelectItem>
+                                    <SelectItem value="Damage">Damage</SelectItem>
+                                  </SelectContent>
+                                </Select>
                               </div>
                             </div>
 
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
                               <div className="space-y-2 sm:col-span-1">
-                                <Label>Issue Quantity</Label>
+                                <Label>Qty</Label>
                                 <Input
                                   type="number"
                                   step="0.01"
                                   placeholder="0"
                                   value={l.qty}
+                                  className={cn(invalid && 'border-destructive')}
                                   onChange={(e) => setDraftLines((prev) => prev.map((x) => (x.id === l.id ? { ...x, qty: e.target.value } : x)))}
                                 />
                               </div>
-                              <div className="sm:col-span-2 text-sm">
-                                {origin && dest && qtyNum > 0 ? (
-                                  <div className="grid grid-cols-2 gap-3">
-                                    <div>
-                                      <div className="text-xs text-muted-foreground">Origin After</div>
-                                      <div className="font-medium">{(origin.currentStock - qtyNum).toFixed(2)} {origin.unitType}</div>
-                                    </div>
-                                    <div>
-                                      <div className="text-xs text-muted-foreground">Destination After</div>
-                                      <div className="font-medium">{(dest.currentStock + qtyNum).toFixed(2)} {dest.unitType}</div>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="text-xs text-muted-foreground">Select origin/destination and qty to preview.</div>
-                                )}
+
+                              <div className="space-y-2">
+                                <Label>Unit</Label>
+                                <Select value={inputUnit} onValueChange={(v) => setDraftLines((prev) => prev.map((x) => (x.id === l.id ? { ...x, inputUnit: v } : x)))}>
+                                  <SelectTrigger className={cn('h-9 w-full', invalid && 'border-destructive')}>
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {unitOptions.map((u) => (
+                                      <SelectItem key={u} value={u}>{u}</SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+
+                              <div className="space-y-2 sm:col-span-2">
+                                <Label>Notes <span className="text-xs text-muted-foreground">(optional)</span></Label>
+                                <Input value={l.notes ?? ''} className={cn(invalid && 'border-destructive')} onChange={(e) => setDraftLines((prev) => prev.map((x) => (x.id === l.id ? { ...x, notes: e.target.value } : x)))} />
                               </div>
                             </div>
 
-                            {validated.lines.find((x) => x.id === l.id)?.touched && validated.lines.find((x) => x.id === l.id)?.errors.length ? (
-                              <div className="text-xs text-destructive">
-                                {validated.lines.find((x) => x.id === l.id)!.errors[0]}
-                              </div>
+                            <div>
+                              {item && qtyNum > 0 ? (
+                                <div className="grid grid-cols-2 gap-3">
+                                  <div>
+                                    <div className="text-xs text-muted-foreground">Current Stock</div>
+                                    <div className="font-medium">{item.currentStock.toFixed(2)} {item.unitType}</div>
+                                  </div>
+                                  <div>
+                                    <div className="text-xs text-muted-foreground">New Stock</div>
+                                    <div className="font-medium">{(item.currentStock - (validatedLine?.baseQty ?? 0)).toFixed(2)} {item.unitType}</div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="text-xs text-muted-foreground">Select item and qty to preview.</div>
+                              )}
+                            </div>
+
+                            {validatedLine?.touched && validatedLine?.errors?.length ? (
+                              <div className="text-xs text-destructive">{validatedLine.errors[0]}</div>
                             ) : null}
                           </CardContent>
                         </Card>
@@ -412,7 +557,7 @@ export default function StockIssues() {
                         ) : null}
                         <div className="flex items-center justify-between text-sm">
                           <span>Estimated value:</span>
-                          <span className="font-medium">K {validated.totalValue.toFixed(2)}</span>
+                          <span className="font-medium">{formatMoneyPrecise(validated.totalValue, 2)}</span>
                         </div>
                       </CardContent>
                     </Card>
@@ -421,17 +566,37 @@ export default function StockIssues() {
               </div>
 
               <DialogFooter>
-                <Button variant="outline" onClick={() => setIsAddDialogOpen(false)}>
+                <Button variant="outline" onClick={() => setIsAddDialogOpen(false)} disabled={isSaving}>
                   Cancel
                 </Button>
-                <Button onClick={confirmIssue} disabled={!validated.canConfirm}>
-                  Confirm Issue
+                <Button
+                  onClick={confirmIssue}
+                  disabled={!validated.canConfirm || isSaving || !currentUserId}
+                  aria-busy={isSaving}
+                  className={cn(
+                    'inline-flex items-center gap-2 transition-transform duration-150',
+                    isSaving ? 'scale-95 opacity-80 animate-pulse' : 'hover:scale-[1.02]'
+                  )}
+                >
+                  {isSaving ? (
+                    <>
+                      <span className="inline-block h-4 w-4 mr-2 animate-spin rounded-full border-t-2 border-b-2 border-white/50" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <svg className="h-4 w-4 mr-2 opacity-90" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v7l4 2" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      Confirm Issue
+                    </>
+                  )}
                 </Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
         }
       />
+
+      {/* loading spinner moved below the search (cards area) */}
 
       <div className="flex flex-col sm:flex-row gap-4 mb-6">
         <div className="relative flex-1">
@@ -450,59 +615,81 @@ export default function StockIssues() {
       </div>
 
       <div className="space-y-4">
-        {issueGroups.map((group) => (
-          <Card key={group.issueNo}>
-            <CardContent className="p-0">
-              <div className="flex items-center justify-between p-4 border-b bg-muted/30">
-                <div>
-                  <p className="font-medium">Issue #{group.issueNo}</p>
-                  <p className="text-sm text-muted-foreground">
-                    {group.date} • By {group.createdBy}
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="text-sm text-muted-foreground">Total Value</p>
-                  <p className="font-medium">K {group.totalValue.toFixed(2)}</p>
-                </div>
-              </div>
+        {loading ? (
+          <div className="flex items-center justify-center py-6">
+            <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-primary/60 border-opacity-30" />
+          </div>
+        ) : null}
 
-              <DataTableWrapper className="border-0 rounded-none">
-                <Table className="data-table">
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Origin Code</TableHead>
-                      <TableHead>Dest Code</TableHead>
-                      <TableHead className="text-right">Was</TableHead>
-                      <TableHead className="text-right">Issued</TableHead>
-                      <TableHead className="text-right">Now</TableHead>
-                      <TableHead className="text-right">Value</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {group.items.map((issue) => (
-                      <TableRow key={issue.id}>
-                        <TableCell className="font-mono">{issue.originItemCode}</TableCell>
-                        <TableCell className="font-mono">{issue.destinationItemCode}</TableCell>
-                        <TableCell className="text-right">
-                          <NumericCell value={issue.wasQty} />
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <NumericCell value={issue.issuedQty} showSign colorCode />
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <NumericCell value={issue.nowQty} />
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <NumericCell value={issue.value} money showSign colorCode />
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </DataTableWrapper>
-            </CardContent>
-          </Card>
-        ))}
+        {issueGroups.map((grp) => {
+          const first = grp.first;
+          const item = getStockItemById(first.stockItemId);
+          const code = item?.code ?? first.stockItemId;
+          const name = item?.name ?? '';
+          const date = grp.createdAt ?? first.createdAt ?? first.date ?? '';
+          const creatorId = grp.createdById ?? first.createdBy ?? first.created_by ?? '';
+          const creator = userNameById.get(String(creatorId)) ?? (String(creatorId) === String(currentUserId) ? currentUserFullName : String(creatorId));
+          const issueType = grp.lines.length === 1 ? (first.issueType ?? first.issue_type) : (() => {
+            const types = Array.from(new Set(grp.lines.map((l: any) => (l.issueType ?? l.issue_type))));
+            return types.length === 1 ? types[0] : 'Multiple';
+          })();
+
+          return (
+            <Card key={grp.key}>
+              <CardContent className="p-0">
+                <div className="flex items-center justify-between p-4 border-b bg-muted/30">
+                  <div>
+                              <div className="flex items-center gap-3">
+                                {grp.issueNo ? (
+                                  <p className="font-medium text-white">Issue {grp.issueNo}</p>
+                                ) : (
+                                  <p className="font-medium text-white">{new Date(date).toLocaleString()}</p>
+                                )}
+                                <span className="inline-flex items-center px-2 py-0.5 rounded bg-primary text-white text-xs font-semibold">{issueType}</span>
+                                {grp.lines.length > 1 ? <span className="text-sm text-muted-foreground ml-2">{grp.lines.length} items</span> : null}
+                              </div>
+                              <p className="text-sm text-white/80">By {creator}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm text-muted-foreground">Value</p>
+                          <p className="font-medium">{formatMoneyPrecise(Number(grp.totalValue ?? 0), 2)}</p>
+                  </div>
+                </div>
+
+                <div className="p-4 space-y-3">
+                  {grp.lines.map((line: any) => {
+                    const liItem = getStockItemById(line.stockItemId);
+                    const liCode = liItem?.code ?? line.stockItemId;
+                    const liName = liItem?.name ?? '';
+                    const liUnit = liItem ? baseUnitLabel(liItem.unitType) : '';
+                    return (
+                      <div key={line.id} className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                        <div>
+                          <div className="text-xs text-muted-foreground">Item</div>
+                          <div className="font-medium">{liCode} • {liName}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-muted-foreground">Qty Issued</div>
+                          <div className="font-medium text-right">{Number(line.qtyIssued ?? line.qty_issued ?? 0)} {liUnit}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-muted-foreground">Unit Cost</div>
+                          <div className="font-medium text-right">K {(Number(line.unitCostAtTime ?? line.unit_cost_at_time ?? 0)).toFixed(2)}</div>
+                                                  <div className="font-medium text-right">{formatMoneyPrecise(Number(line.unitCostAtTime ?? line.unit_cost_at_time ?? 0), 2)}</div>
+                                                  <span className="font-medium">{formatMoneyPrecise(Number(grp.totalValue ?? 0), 2)}</span>
+                        </div>
+                        <div className="sm:col-span-1">
+                          <div className="text-xs text-muted-foreground">Notes</div>
+                          <div className="text-sm">{line.notes ?? ''}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
 
         {!issueGroups.length && (
           <Card>

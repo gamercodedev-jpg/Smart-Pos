@@ -1,11 +1,18 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { ShoppingCart, Send, Trash2, Plus, Minus, CreditCard, Users, Percent, Settings as SettingsIcon, RefreshCw, Wifi, BellRing, FolderOpen, LogOut } from 'lucide-react';
+import { ShoppingCart, Send, Trash2, Plus, Minus, CreditCard, Users, Percent, Settings as SettingsIcon, RefreshCw, Wifi, BellRing, FolderOpen, LogOut, MoreHorizontal } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { useAuth } from '@/contexts/AuthContext';
@@ -17,6 +24,9 @@ import { InsufficientStockError, RecipeIncompleteError } from '@/lib/recipeEngin
 import { getManufacturingRecipesSnapshot } from '@/lib/manufacturingRecipeStore';
 import { applyStockDeductions, getStockItemById, deductStockItemsRemote } from '@/lib/stockStore';
 import { getOrdersSnapshot, subscribeOrders, upsertOrder, sendOrderPayload } from '@/lib/orderStore';
+import useKitchenRealtime from '@/hooks/useKitchenRealtime';
+import { useToast } from '@/hooks/use-toast';
+// debug viewer removed
 import MenuItemCard from '@/components/pos/MenuItemCard';
 import { getModifierGroup } from '@/data/posModifiers';
 import { useBranding } from '@/contexts/BrandingContext';
@@ -26,6 +36,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from '@/components/ui/command';
 import { parseSmartQuantityQuery, smartSearchMenuItems } from '@/lib/smartMenuSearch';
 import { getPosPaymentRequestsSnapshot, resolvePosPaymentRequest, subscribePosPaymentRequests } from '@/lib/posPaymentRequestStore';
+import { getPosNotificationsSnapshot, subscribePosNotifications, markNotificationsSeen, deleteNotificationById } from '@/lib/posNotificationStore';
 import { ROLE_NAMES } from '@/types/auth';
 import { supabase } from '@/lib/supabaseClient';
 import { useCurrency } from '@/contexts/CurrencyContext';
@@ -42,7 +53,94 @@ export default function POSTerminal() {
   const items = useMemo(() => menu.items.slice(), [menu.items]);
   const orders = useSyncExternalStore(subscribeOrders, getOrdersSnapshot);
 
+  // debug viewer removed
+
+  // Subscribe to kitchen realtime events so the POS sees remote kitchen updates
+  useKitchenRealtime();
+
+  const { toast } = useToast();
+  const prevReadyRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const readyIds = new Set(orders.filter((o) => o.status === 'ready').map((o) => o.id));
+    for (const id of readyIds) {
+      if (!prevReadyRef.current.has(id)) {
+        const ord = orders.find((o) => o.id === id);
+        if (ord) {
+          try {
+            toast({
+              title: 'Order Ready',
+              description: `Order #${ord.orderNo}${ord.tableNo ? ` • Table ${ord.tableNo}` : ''}`,
+            });
+          } catch {
+            // ignore toast failures
+          }
+        }
+      }
+    }
+    prevReadyRef.current = readyIds;
+  }, [orders, toast]);
+
+  // Online/offline status toast and internal state.
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      toast({ title: 'Online', description: 'Internet connection restored.', variant: 'success' });
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      toast({ title: 'Offline', description: 'Internet disconnected. Orders will queue locally and sync later.', variant: 'destructive' });
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [toast]);
+
+  // Also listen for BroadcastChannel notifications from the kitchen (fast local notify)
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel('mthunzi.kitchen');
+      bc.onmessage = (ev: MessageEvent) => {
+        try {
+          const msg = ev.data ?? {};
+          if (msg && msg.type === 'order_ready') {
+            toast({ title: 'Order Ready', description: `Order #${msg.orderNo}${msg.tableNo ? ` • Table ${msg.tableNo}` : ''}` });
+          }
+        } catch {
+          // ignore
+        }
+      };
+    } catch {
+      // ignore
+    }
+    return () => {
+      try {
+        if (bc) {
+          bc.close();
+        }
+      } catch {
+        // ignore
+      }
+    };
+  }, [toast]);
+
   const ALL_CATEGORY_ID = 'all';
+
+  useEffect(() => {
+    if (menu.items.length > 0 || orders.length > 0) {
+      setIsLoading(false);
+    } else {
+      const timer = window.setTimeout(() => setIsLoading(false), 1800);
+      return () => window.clearTimeout(timer);
+    }
+  }, [menu.items.length, orders.length]);
   const categoriesWithAll = useMemo(
     () => [{ id: ALL_CATEGORY_ID, name: 'All', sortOrder: -999, color: 'bg-slate-500' }, ...categories],
     [categories]
@@ -61,6 +159,7 @@ export default function POSTerminal() {
   const [showPaymentRequests, setShowPaymentRequests] = useState(false);
 
   const [showAdminGate, setShowAdminGate] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
   const [adminEmail, setAdminEmail] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [adminBusy, setAdminBusy] = useState(false);
@@ -86,9 +185,7 @@ export default function POSTerminal() {
 
   const isCashier = user?.role === 'cashier';
 
-  // Debug modal for send to kitchen
-  const [showDebugModal, setShowDebugModal] = useState(false);
-  const [debugItems, setDebugItems] = useState<OrderItem[]>([]);
+  // debug modal removed
 
   const getShiftStorageKey = () => {
     const staffId = user?.id ? String(user.id) : 'unknown';
@@ -277,13 +374,18 @@ export default function POSTerminal() {
   }, [isCashier, user?.id]);
   const [receiptOrder, setReceiptOrder] = useState<Order | null>(null);
   const [showReceipt, setShowReceipt] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   const [orderDiscountPercent, setOrderDiscountPercent] = useState(0);
   const [couponCode, setCouponCode] = useState('');
   const [showCoupon, setShowCoupon] = useState(false);
 
   const paymentRequests = useSyncExternalStore(subscribePosPaymentRequests, getPosPaymentRequestsSnapshot);
+  const posNotifs = useSyncExternalStore(subscribePosNotifications, getPosNotificationsSnapshot);
   const prevRequestIds = useRef<string>('');
+  const prevNotifIds = useRef<string>('');
+  const [showSlide, setShowSlide] = useState(false);
+  const slideTimerRef = useRef<number | null>(null);
 
   const computeLineTotal = (unitPrice: number, qty: number, discountPercent?: number) => {
     const d = Math.min(100, Math.max(0, discountPercent ?? 0));
@@ -335,6 +437,71 @@ export default function POSTerminal() {
     const ids = paymentRequests.map((r) => r.id).join('|');
     prevRequestIds.current = ids;
   }, [paymentRequests]);
+
+  useEffect(() => {
+    const ids = posNotifs.map((n) => n.id).join('|');
+    if (ids !== prevNotifIds.current) {
+      const prevSet = new Set(prevNotifIds.current.split('|').filter(Boolean));
+      for (const n of posNotifs) {
+        if (!prevSet.has(n.id)) {
+          try {
+            toast({ title: 'Order Ready', description: `Order #${n.payload?.orderNo}${n.payload?.tableNo ? ` • Table ${n.payload.tableNo}` : ''}` });
+          } catch {
+            // ignore
+          }
+          // Open slide-down panel and play sound to attract attention
+          try {
+            setShowSlide(true);
+            if (slideTimerRef.current) window.clearTimeout(slideTimerRef.current as any);
+            slideTimerRef.current = window.setTimeout(() => setShowSlide(false), 8000);
+          } catch {}
+          try { playNotificationTone(); } catch {}
+        }
+      }
+    }
+    prevNotifIds.current = ids;
+  }, [posNotifs, toast]);
+
+  function playNotificationTone() {
+    try {
+      const AudioCtx = (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+      const gain = ctx.createGain();
+      gain.gain.value = 0.0;
+      gain.connect(ctx.destination);
+
+      // Short two-tone pattern, louder but short so it's not unpleasant
+      const osc1 = ctx.createOscillator();
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(1200, now);
+      osc1.connect(gain);
+
+      const osc2 = ctx.createOscillator();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(800, now + 0.12);
+      osc2.connect(gain);
+
+      // Envelope: quick attack, medium decay
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.08, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
+
+      osc1.start(now);
+      osc1.stop(now + 0.18);
+      osc2.start(now + 0.12);
+      osc2.stop(now + 0.36);
+
+      setTimeout(() => {
+        try { osc1.disconnect(); } catch {}
+        try { osc2.disconnect(); } catch {}
+        try { gain.disconnect(); } catch {}
+        try { ctx.close(); } catch {}
+      }, 700);
+    } catch {}
+  }
 
   const popularItems = useMemo(() => {
     // Local "AI" suggestion: top-selling items from paid orders.
@@ -459,6 +626,29 @@ export default function POSTerminal() {
     };
 
     setOrderItems([...orderItems, newItem]);
+  };
+
+  // Slide-down notification UI (renders near top of the page)
+  const SlideNotification = () => {
+    if (!showSlide || posNotifs.length === 0) return null;
+    const n = posNotifs[0];
+    return (
+      <div className={cn(
+        'fixed left-1/2 transform -translate-x-1/2 top-4 z-50 transition-transform duration-300',
+        showSlide ? 'translate-y-0' : '-translate-y-20'
+      )}>
+        <div className="max-w-lg w-[min(95vw,480px)] bg-white border shadow-lg rounded-md p-4 flex items-start gap-3">
+          <div className="flex-1">
+            <div className="font-medium">Order Ready</div>
+            <div className="text-sm text-slate-600">Order #{n.payload?.orderNo}{n.payload?.tableNo ? ` • Table ${n.payload.tableNo}` : ''}</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => { setShowSlide(false); }}>Dismiss</Button>
+            <Button size="sm" onClick={() => { setShowNotifications(true); setShowSlide(false); }}>Open</Button>
+          </div>
+        </div>
+      </div>
+    );
   };
   
   const updateQuantity = (itemId: string, delta: number) => {
@@ -715,6 +905,9 @@ export default function POSTerminal() {
   };
   
   const handleSendToKitchen = async () => {
+    if (!isOnline) {
+      toast({ title: 'No Internet', description: 'You are offline. Send-to-kitchen requests will sync when connection returns.', variant: 'warning' });
+    }
     try {
       await applyRecipeDeductionsOrThrow();
 
@@ -730,84 +923,45 @@ export default function POSTerminal() {
         return acc;
       }, [] as OrderItem[]);
 
-      // Save the merged order
+      // Save the merged order (guaranteed only once)
       const saved = upsertActiveOrder({ status: 'sent', sent: true, items: mergedItems });
 
-      // If items were merged, update the order
-      let finalSaved = saved;
-      if (mergedItems.length !== saved.items.length) {
-        const updatedOrder = { ...saved, items: mergedItems };
-        upsertOrder(updatedOrder);
-        finalSaved = updatedOrder;
-      }
+      // debug: removed on-screen merged items
 
-      // Debug: show merged items
-      setDebugItems(mergedItems);
-      setShowDebugModal(true);
+      // Clear local items after sending to prevent accidental re-send
+      setOrderItems([]);
 
-      // mark local items as sent
-      setOrderItems(mergedItems.map(item => ({ ...item, sentToKitchen: true })));
-
-      // also attempt an explicit server upsert using snake_case payloads
-      try {
-        const orderData = {
-          id: finalSaved.id,
-          order_no: finalSaved.orderNo,
-          status: finalSaved.status,
-          order_type: finalSaved.orderType,
-          table_no: finalSaved.tableNo ?? null,
-          subtotal: finalSaved.subtotal,
-          total: finalSaved.total,
-          staff_id: finalSaved.staffId,
-          staff_name: finalSaved.staffName,
-          created_at: finalSaved.createdAt,
-          sent_at: finalSaved.sentAt ?? null,
-        };
-
-        const itemsData = (finalSaved.items ?? []).map((it) => ({
-          order_id: finalSaved.id,
-          menu_item_id: it.menuItemId,
-          menu_item_code: it.menuItemCode,
-          menu_item_name: it.menuItemName,
-          quantity: it.quantity,
-          unit_price: it.unitPrice,
-          unit_cost: it.unitCost,
-          discount_percent: it.discountPercent ?? null,
-          total: it.total,
-          notes: it.notes ?? null,
-          modifiers: it.modifiers ?? null,
-          is_voided: it.isVoided ?? false,
-          sent_to_kitchen: Boolean(it.sentToKitchen),
-          kitchen_status: 'pending',
-          created_at: finalSaved.createdAt,
-        }));
-
-        const { data, error } = await sendOrderPayload(orderData, itemsData);
-        if (error) console.warn('[POSTerminal] explicit sendOrderPayload failed', error);
-        else console.debug('[POSTerminal] explicit sendOrderPayload success', data);
-      } catch (e) {
-        console.warn('[POSTerminal] explicit server sync failed', e);
-      }
+      // Note: we intentionally do NOT call `sendOrderPayload` here because
+      // `upsertOrder` already triggers remote sync (via `sendOrderToSupabase`).
+      // Calling both can result in duplicate inserts in some environments
+      // due to concurrent retries/deletes. The automatic sync will handle
+      // server upsert/insert reliably and is preferred.
     } catch (e) {
       showDeductionError(e);
     }
   };
   
   const handlePaymentComplete = async (method: PaymentMethod) => {
+    if (!isOnline) {
+      toast({ title: 'No Internet', description: 'You are offline. The payment order will be synced once online.', variant: 'warning' });
+    }
+
     try {
       await applyRecipeDeductionsOrThrow();
 
       const saved = upsertActiveOrder({ status: 'paid', paymentMethod: method, sent: true });
-
-      // Resolve any outstanding payment request for this order.
-      const req = paymentRequests.find((r) => r.orderId === saved.id);
-      if (req) resolvePosPaymentRequest(req.id);
 
       setReceiptOrder(saved);
       setShowReceipt(true);
 
       setShowPayment(false);
       clearOrder();
+
+      // Resolve payment requests in background so receipt appears immediately.
+      setTimeout(() => {
+        const req = paymentRequests.find((r) => r.orderId === saved.id);
+        if (req) resolvePosPaymentRequest(req.id);
+      }, 0);
     } catch (e) {
       setShowPayment(false);
       showDeductionError(e);
@@ -856,14 +1010,64 @@ export default function POSTerminal() {
     }
   };
   
+  if (isLoading) {
+    return (
+      <div className="h-screen p-3 pos-light flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-primary/60 border-opacity-30 mx-auto" />
+          <p className="mt-4 text-lg font-semibold">Loading menu & orders...</p>
+          <p className="text-sm text-muted-foreground">Please wait a moment while data is retrieved.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-screen p-3 pos-light">
       <div className="h-full rounded-2xl border bg-background overflow-auto lg:overflow-hidden overscroll-contain">
-        <div className="h-full grid grid-cols-1 lg:grid-cols-[4.5rem_1fr_26rem]">
+        <div className="h-full grid grid-cols-1 md:grid-cols-[4.5rem_1fr] lg:grid-cols-[4.5rem_1fr_22rem] xl:grid-cols-[4.5rem_1fr_26rem]">
           {/* Left icon rail (POS-like) */}
           <div className="hidden lg:flex flex-col items-center border-r bg-muted/30 py-3">
             <div className="w-12 h-12 rounded-xl border bg-background flex items-center justify-center font-bold">
               {settings.appName.slice(0, 1).toUpperCase()}
+            </div>
+
+            <div className="mt-3 w-full px-2">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="ghost" className="h-9 w-full justify-center">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-48">
+                  <div className="space-y-2">
+                    <div className="text-xs text-muted-foreground">{user?.name ?? 'Unknown'}</div>
+                    <div className="text-xs text-muted-foreground">{ROLE_NAMES[user?.role ?? 'guest'] ?? user?.role}</div>
+                    <div className="h-px bg-border" />
+                    <Button variant="ghost" className="w-full justify-start" onClick={openSettings}>
+                      <SettingsIcon className="h-4 w-4 mr-2" />
+                      Settings
+                    </Button>
+                    <Button variant="ghost" className="w-full justify-start" onClick={() => {
+                      if (isCashier && activeShiftId) {
+                        setShiftError(null);
+                        setClosingCash('');
+                        setCashierPin('');
+                        setConfirmEndShift(false);
+                        setShowEndShift(true);
+                        return;
+                      }
+                      void (async () => {
+                        await logout();
+                        navigate('/');
+                      })();
+                    }}>
+                      <LogOut className="h-4 w-4 mr-2" />
+                      Logout
+                    </Button>
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
 
             <div className="mt-2 flex-1" />
@@ -882,6 +1086,7 @@ export default function POSTerminal() {
 
           {/* Middle: Menu */}
           <div className="flex flex-col min-w-0">
+            {/* Debug panel removed */}
             {/* Top bar */}
             <div className="flex items-center justify-between gap-3 border-b p-3">
               <div className="font-semibold hidden sm:block">{settings.appName}</div>
@@ -969,18 +1174,10 @@ export default function POSTerminal() {
                   </PopoverContent>
                 </Popover>
               </div>
-              <div className="flex items-center gap-2">
-                {user ? (
-                  <div className="hidden md:flex items-center gap-2 mr-1">
-                    <Badge variant="secondary" className="max-w-[220px] truncate">
-                      {user.name}
-                    </Badge>
-                    <Badge variant="outline">{ROLE_NAMES[user.role] ?? user.role}</Badge>
-                  </div>
-                ) : null}
+              <div className="flex items-center gap-1 sm:gap-2">
                 <Button
                   variant="outline"
-                  className="hidden sm:inline-flex"
+                  className="h-10 w-10 sm:h-auto sm:w-auto"
                   title="Logout"
                   onClick={() => {
                     if (isCashier && activeShiftId) {
@@ -998,7 +1195,8 @@ export default function POSTerminal() {
                     })();
                   }}
                 >
-                  <LogOut className="h-4 w-4 mr-2" /> Logout
+                  <LogOut className="h-4 w-4" />
+                  <span className="hidden xl:inline ml-2">Logout</span>
                 </Button>
                 <Button variant="outline" size="icon" title="Refresh" onClick={() => window.location.reload()}>
                   <RefreshCw className="h-4 w-4" />
@@ -1010,26 +1208,67 @@ export default function POSTerminal() {
                 <Button
                   variant="outline"
                   className="relative"
-                  onClick={() => setShowPaymentRequests(true)}
-                  title="Payment requests"
+                  title="Requests"
+                  onClick={() => setShowNotifications(true)}
                 >
-                  <BellRing className="h-4 w-4 mr-2" /> Requests
-                  {paymentRequests.length > 0 ? (
+                  <BellRing className="h-4 w-4" />
+                  <span className="hidden lg:inline ml-2">Requests</span>
+                  {posNotifs.length > 0 ? (
+                    <span className="ml-2 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-destructive px-1 text-xs font-bold text-destructive-foreground">
+                      {posNotifs.length}
+                    </span>
+                  ) : null}
+                  {paymentRequests.length > 0 && posNotifs.length === 0 ? (
                     <span className="ml-2 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-destructive px-1 text-xs font-bold text-destructive-foreground">
                       {paymentRequests.length}
                     </span>
                   ) : null}
                 </Button>
 
-                <Button variant="outline" onClick={() => setShowHeldOrders(true)} title="Resume held orders">
-                  <FolderOpen className="h-4 w-4 mr-2" /> Held
+                <Dialog open={showNotifications} onOpenChange={setShowNotifications}>
+                  <DialogContent className="max-w-md">
+                    <div className="space-y-2">
+                      <div className="font-medium">Notifications</div>
+                      {posNotifs.length === 0 ? (
+                        <div className="text-sm text-muted-foreground">No new notifications</div>
+                      ) : (
+                        posNotifs.map((n) => (
+                          <div key={n.id} className="flex items-start justify-between gap-2">
+                            <div className="text-sm">Order #{n.payload?.orderNo}{n.payload?.tableNo ? ` • Table ${n.payload.tableNo}` : ''}</div>
+                            <div className="flex items-center gap-2">
+                              <div className="text-xs text-muted-foreground">{new Date(n.created_at).toLocaleTimeString()}</div>
+                              <Button
+                                variant="outline"
+                                className="h-7 px-2 text-xs"
+                                onClick={async () => { await deleteNotificationById(n.id); }}
+                              >
+                                Done
+                              </Button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                      <div className="h-px bg-border my-2" />
+                      <div className="flex gap-2">
+                        <Button className="flex-1" variant="outline" onClick={() => { markNotificationsSeen(); }}>
+                          Dismiss
+                        </Button>
+                      </div>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+
+                <Button variant="outline" className="relative" onClick={() => setShowHeldOrders(true)} title="Resume held orders">
+                  <FolderOpen className="h-4 w-4" />
+                  <span className="hidden lg:inline ml-2">Held</span>
                 </Button>
 
                 {/* Table picker */}
                 <Dialog open={showTableSelect} onOpenChange={setShowTableSelect}>
                   <DialogTrigger asChild>
-                    <Button className="h-10" variant="default">
-                      Select Table
+                    <Button className="h-10 min-w-[110px] text-xs sm:text-sm" variant="default">
+                      <span className="hidden sm:inline">Select Table</span>
+                      <span className="inline sm:hidden">Table</span>
                     </Button>
                   </DialogTrigger>
                   <DialogContent className="max-w-md">
@@ -1329,22 +1568,28 @@ export default function POSTerminal() {
               </DialogContent>
             </Dialog>
 
-            {/* Category tabs */}
+            {/* Category selector (responsive) */}
             <div className="border-b px-3 py-2">
-              <div className="flex flex-wrap gap-2">
-                {categoriesWithAll.map(cat => (
-                  <Button
-                    key={cat.id}
-                    variant={selectedCategory === cat.id ? 'default' : 'outline'}
-                    className={cn('h-9 rounded-full', selectedCategory === cat.id && cat.color)}
-                    onClick={() => {
-                      setSelectedCategory(cat.id);
-                      setSearchQuery('');
-                    }}
-                  >
-                    {cat.name}
-                  </Button>
-                ))}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm font-medium">Category</span>
+                <Select
+                  value={selectedCategory}
+                  onValueChange={(value) => {
+                    setSelectedCategory(value);
+                    setSearchQuery('');
+                  }}
+                >
+                  <SelectTrigger className="min-w-[150px]">
+                    <SelectValue placeholder="All" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categoriesWithAll.map((cat) => (
+                      <SelectItem key={cat.id} value={cat.id}>
+                        {cat.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
@@ -1372,7 +1617,7 @@ export default function POSTerminal() {
           </div>
 
           {/* Right: Cart */}
-          <div className="border-l bg-muted/20 flex flex-col min-h-0">
+          <div className="border-l bg-muted/20 flex flex-col min-h-0 w-full max-w-full lg:max-w-[22rem] xl:max-w-[26rem]">
         {/* Order Header */}
         <div className="p-3 border-b bg-background/50">
           <div className="flex items-center justify-between mb-2">
@@ -1840,24 +2085,7 @@ export default function POSTerminal() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <Dialog open={showDebugModal} onOpenChange={setShowDebugModal}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Debug: Items Sent to Kitchen</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2">
-            {debugItems.map((item, index) => (
-              <div key={index} className="flex justify-between">
-                <span>{item.menuItemName}</span>
-                <span>×{item.quantity}</span>
-              </div>
-            ))}
-          </div>
-          <div className="mt-4">
-            <Button onClick={() => setShowDebugModal(false)}>Close</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {/* Debug modal removed */}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { isSupabaseConfigured, supabase } from '@/lib/supabaseClient';
 import { ensureRecipesLoaded, getManufacturingRecipesSnapshot } from '@/lib/manufacturingRecipeStore';
 import { logSensitiveAction } from '@/lib/systemAuditLog';
 import { getActiveBrandId, subscribeActiveBrandId } from '@/lib/activeBrand';
+import { pushDebug } from '@/lib/debugLog';
 
 const STORAGE_KEY = 'mthunzi.orders.v1';
 
@@ -114,6 +115,11 @@ async function sendOrderToSupabase(order: Order) {
     sent_to_kitchen: it.sentToKitchen,
     created_at: order.createdAt,
   }));
+  // Debug: log if any item quantity is unexpectedly high (possible double-merge)
+  const doubled = itemsPayload.filter(i => i.quantity > 100); // arbitrary threshold
+  if (doubled.length > 0) {
+    console.warn('[orderStore] Unusually high item quantities detected', doubled);
+  }
 
   // Insert items directly into public.pos_order_items
   try {
@@ -138,6 +144,56 @@ async function sendOrderToSupabase(order: Order) {
     if (itemsError) {
       console.error('[orderStore] failed to insert items into pos_order_items', itemsError);
       throw itemsError;
+    }
+
+    // Persist invoice record for paid orders (one invoice per order)
+    if (order.status === 'paid' && currentBrandId) {
+      try {
+        const invoiceOrderId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(remoteOrderId)
+          ? remoteOrderId
+          : null;
+
+        let existingInvoice = null;
+
+        if (invoiceOrderId) {
+          const { data, error } = await supabase!
+            .from('invoices')
+            .select('id')
+            .eq('order_id', invoiceOrderId)
+            .maybeSingle();
+
+          if (error) {
+            console.warn('[orderStore] failed to check existing invoice', error);
+          } else {
+            existingInvoice = data;
+          }
+        }
+
+        if (!existingInvoice) {
+          const invoiceNumber = order.orderNo ? `INV-${order.orderNo}` : `INV-${Date.now()}`;
+
+          const { error: invoiceInsertError } = await supabase!.from('invoices').insert({
+            brand_id: currentBrandId,
+            order_id: invoiceOrderId,
+            invoice_number: invoiceNumber,
+            issued_at: new Date().toISOString(),
+            total: order.total,
+            status: 'issued',
+          });
+
+          if (invoiceInsertError) {
+            console.warn('[orderStore] failed to insert invoice', invoiceInsertError);
+          } else {
+            console.debug('[orderStore] invoice created', {
+              order_id: invoiceOrderId,
+              original_order_id: remoteOrderId,
+              invoice_number: invoiceNumber,
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('[orderStore] invoice write exception', e);
+      }
     }
   } catch (e) {
     console.error('[orderStore] insert to pos_order_items failed', e);
@@ -320,6 +376,8 @@ export function markOrderSent(orderId: string) {
   if (!order) return;
   const updated: Order = { ...order, status: 'sent', sentAt: new Date().toISOString() };
   save({ ...state, orders: state.orders.map(o => (o.id === orderId ? updated : o)) });
+  console.debug('[orderStore] markOrderSent called for', orderId, { orderNo: updated.orderNo, tableNo: updated.tableNo });
+  try { pushDebug(`[orderStore] markOrderSent called for ${orderId} orderNo=${updated.orderNo} table=${updated.tableNo}`); } catch {}
 
   try {
     void logSensitiveAction({
@@ -329,6 +387,53 @@ export function markOrderSent(orderId: string) {
       reference: updated.id,
       newValue: updated.status,
       notes: `Order #${updated.orderNo} sent to kitchen`,
+      captureGeo: false,
+    });
+  } catch {
+    // ignore
+  }
+
+  try {
+    ensureFlushWired();
+    if (!useRemote) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      void enqueueOrder(updated);
+      return;
+    }
+    void sendOrderToSupabase(updated).then(() => {
+      console.debug('[orderStore] sendOrderToSupabase completed for', updated.id);
+      try { pushDebug(`[orderStore] sendOrderToSupabase completed for ${updated.id}`); } catch {}
+    }).catch(() => {
+      console.debug('[orderStore] sendOrderToSupabase failed; enqueued for', updated.id);
+      try { pushDebug(`[orderStore] sendOrderToSupabase failed; enqueued for ${updated.id}`); } catch {}
+      enqueueOrder(updated);
+    });
+  } catch {
+    // ignore
+  }
+}
+
+export function markOrderStarted(orderId: string) {
+  const state = getState();
+  const order = state.orders.find(o => o.id === orderId);
+  if (!order) return;
+  const now = new Date().toISOString();
+  const updated: Order = { ...order, status: 'in_progress', sentAt: order.sentAt ?? now };
+  save({ ...state, orders: state.orders.map(o => (o.id === orderId ? updated : o)) });
+
+  try {
+    const stack = (new Error('markOrderStarted stack')).stack ?? '';
+    try { pushDebug('[orderStore] markOrderStarted called for ' + orderId + '\n' + stack); } catch {}
+  } catch {}
+
+  try {
+    void logSensitiveAction({
+      userId: updated.staffId,
+      userName: updated.staffName,
+      actionType: 'order_started',
+      reference: updated.id,
+      newValue: updated.status,
+      notes: `Order #${updated.orderNo} started in kitchen`,
       captureGeo: false,
     });
   } catch {
@@ -352,6 +457,16 @@ export function markOrderReady(orderId: string) {
   const state = getState();
   const order = state.orders.find(o => o.id === orderId);
   if (!order) return;
+  // If order is already marked ready, do nothing (avoid duplicate notifications)
+  if (order.status === 'ready') {
+    console.debug('[orderStore] markOrderReady called but order already ready', orderId);
+    try { pushDebug(`[orderStore] markOrderReady skipped for ${orderId} (already ready)`); } catch {}
+    return;
+  }
+  try {
+    const stack = (new Error('markOrderReady stack')).stack ?? '';
+    try { pushDebug('[orderStore] markOrderReady invoked for ' + orderId + '\n' + stack); } catch {}
+  } catch {}
   const now = new Date().toISOString();
   const updated: Order = {
     ...order,
@@ -382,6 +497,21 @@ export function markOrderReady(orderId: string) {
       return;
     }
     void sendOrderToSupabase(updated).catch(() => enqueueOrder(updated));
+    // Notify other local tabs/terminals immediately via BroadcastChannel so POS
+    // receives an instant 'order_ready' notification even before realtime round-trip.
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        try {
+          const bc = new BroadcastChannel('mthunzi.kitchen');
+          bc.postMessage({ type: 'order_ready', orderId: updated.id, orderNo: updated.orderNo, tableNo: updated.tableNo });
+          bc.close();
+        } catch {
+          // ignore channel errors
+        }
+      }
+    } catch {
+      // ignore
+    }
   } catch {
     // ignore
   }
@@ -417,6 +547,53 @@ export function markOrderServed(orderId: string) {
       return;
     }
     void sendOrderToSupabase(updated).catch(() => enqueueOrder(updated));
+  } catch {
+    // ignore
+  }
+}
+
+// Explicitly insert a brand-scoped ready notification. Call this from the
+// Kitchen UI when the user clicks the explicit "Pass" action so that only an
+// intentional pass will notify other terminals.
+export async function notifyOrderReady(orderId: string) {
+  try {
+    const state = getState();
+    const order = state.orders.find((o) => o.id === orderId);
+    if (!order) return;
+    if (!useRemote) return;
+    const notif = {
+      brand_id: currentBrandId,
+      type: 'order_ready',
+      payload: { orderId: order.id, orderNo: order.orderNo, tableNo: order.tableNo },
+    };
+    try {
+      const { data: notifData, error: notifErr } = await supabase!.from('pos_notifications').insert(notif).select();
+      if (notifErr) {
+        console.warn('[orderStore] failed to insert pos_notifications', notifErr);
+        try { pushDebug('[orderStore] failed to insert pos_notifications: ' + String(notifErr)); } catch {}
+      } else {
+        try { pushDebug('[orderStore] pos_notifications inserted for ' + order.id); } catch {}
+        // Fast same-origin fallback: broadcast the new notification so local POS tabs
+        // receive it immediately without waiting for realtime DB events.
+        try {
+          if (typeof BroadcastChannel !== 'undefined') {
+            try {
+              const bc = new BroadcastChannel('mthunzi.kitchen');
+              const created = Array.isArray(notifData) ? notifData[0] : notifData;
+              bc.postMessage({ type: 'pos_notification', notification: created });
+              bc.close();
+            } catch {
+              // ignore channel errors
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+    } catch (e) {
+      console.warn('[orderStore] exception inserting pos_notifications', e);
+      try { pushDebug('[orderStore] exception inserting pos_notifications: ' + String(e)); } catch {}
+    }
   } catch {
     // ignore
   }
@@ -568,8 +745,8 @@ export async function fetchAndReplaceOrdersFromSupabase() {
         orderNo: Number(orderRow.order_no) || 0,
         tableId: orderRow.table_no ? `t${orderRow.table_no}` : undefined,
         tableNo: orderRow.table_no ?? undefined,
-        orderType: orderRow.order_type,
-        status: orderRow.status,
+        orderType: orderRow.order_type as OrderType,
+        status: orderRow.status as OrderStatus,
         staffId: String(orderRow.staff_id ?? ''),
         staffName: orderRow.staff_name ?? '',
         items: itemsNormalized,
@@ -596,5 +773,48 @@ export async function fetchAndReplaceOrdersFromSupabase() {
     save({ version: 1, orders: merged });
   } catch (e) {
     console.warn('[orderStore] fetchAndReplaceOrdersFromSupabase error', e);
+  }
+}
+
+// Realtime subscription helper: listen for pos_orders/pos_order_items changes
+// and refresh local orders when events arrive. Returns a cleanup function.
+export function subscribeToRealtimeOrders(): (() => void) | null {
+  try {
+    if (!supabase) return null;
+    const brandId = currentBrandId;
+    if (!brandId) return null;
+    const channelName = `orders-channel.${brandId}`;
+    const channel = (supabase as any).channel(channelName);
+
+    // Listen to changes on pos_orders and pos_order_items for this brand
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'pos_orders', filter: `brand_id=eq.${brandId}` }, async (payload: any) => {
+      try {
+        // best-effort: refetch relevant orders from Supabase
+        await fetchAndReplaceOrdersFromSupabase();
+      } catch (e) {
+        console.warn('[orderStore] realtime handler failed to refresh orders', e);
+      }
+    });
+
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'pos_order_items', filter: `brand_id=eq.${brandId}` }, async (payload: any) => {
+      try {
+        await fetchAndReplaceOrdersFromSupabase();
+      } catch (e) {
+        console.warn('[orderStore] realtime handler failed to refresh order items', e);
+      }
+    });
+
+    channel.subscribe();
+
+    return () => {
+      try {
+        if ((supabase as any).removeChannel) (supabase as any).removeChannel(channel);
+      } catch (e) {
+        // ignore
+      }
+    };
+  } catch (e) {
+    console.warn('[orderStore] subscribeToRealtimeOrders failed', e);
+    return null;
   }
 }

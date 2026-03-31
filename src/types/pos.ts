@@ -3,7 +3,7 @@
 // ============================================
 
 export type TableStatus = 'available' | 'occupied' | 'reserved' | 'dirty';
-export type OrderStatus = 'open' | 'sent' | 'ready' | 'served' | 'paid' | 'voided';
+export type OrderStatus = 'open' | 'sent' | 'in_progress' | 'ready' | 'served' | 'paid' | 'voided';
 export type OrderType = 'eat_in' | 'take_out' | 'delivery';
 export type PaymentMethod = 'cash' | 'card' | 'cheque' | 'account' | 'non_bank';
 

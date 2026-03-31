@@ -7,6 +7,7 @@ export const DEFAULT_RECEIPT_SETTINGS: ReceiptSettings = {
   countryCode: 'ZM',
   currencyCode: 'ZMW',
   legalFooter: 'Thank you for your support. Keep this receipt for your records.',
+  autoPrint: true,
   googleReviewUrl: 'https://www.google.com/search?q=your+restaurant+google+reviews',
   digitalReceiptBaseUrl: 'https://yourdomain.com/r/',
 };

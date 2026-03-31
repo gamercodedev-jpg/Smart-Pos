@@ -399,10 +399,10 @@ export default function StockItems() {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="department">Department</Label>
+                    <Label htmlFor="department">Category</Label>
                     <Select value={addForm.departmentId} onValueChange={val => setAddForm(f => ({ ...f, departmentId: val }))}>
                       <SelectTrigger>
-                        <SelectValue placeholder="Select department" />
+                        <SelectValue placeholder="Select category" />
                       </SelectTrigger>
                       <SelectContent>
                         {departmentsList.map((dept) => (
@@ -434,15 +434,15 @@ export default function StockItems() {
                 <div className="grid grid-cols-3 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="lowest">Lowest Cost</Label>
-                    <Input id="lowest" type="number" step="0.01" placeholder="0.00" value={addForm.lowestCost} onChange={e => setAddForm(f => ({ ...f, lowestCost: e.target.value }))} />
+                    <Input id="lowest" type="number" step="0.01" value={addForm.lowestCost} onChange={e => setAddForm(f => ({ ...f, lowestCost: e.target.value }))} />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="highest">Highest Cost</Label>
-                    <Input id="highest" type="number" step="0.01" placeholder="0.00" value={addForm.highestCost} onChange={e => setAddForm(f => ({ ...f, highestCost: e.target.value }))} />
+                    <Input id="highest" type="number" step="0.01" value={addForm.highestCost} onChange={e => setAddForm(f => ({ ...f, highestCost: e.target.value }))} />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="current">Current Cost</Label>
-                    <Input id="current" type="number" step="0.01" placeholder="0.00" value={addForm.currentCost} onChange={e => setAddForm(f => ({ ...f, currentCost: e.target.value }))} />
+                    <Input id="current" type="number" step="0.01" value={addForm.currentCost} onChange={e => setAddForm(f => ({ ...f, currentCost: e.target.value }))} />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -465,7 +465,7 @@ export default function StockItems() {
                         return (
                           <>
                             <Label htmlFor="stock">Current Stock (Total {displayUnit})</Label>
-                            <Input id="stock" type="number" step="0.01" placeholder={`e.g., 50.00`} value={addForm.currentStock} onChange={e => setAddForm(f => ({ ...f, currentStock: e.target.value }))} />
+                            <Input id="stock" type="number" step="0.01" value={addForm.currentStock} onChange={e => setAddForm(f => ({ ...f, currentStock: e.target.value }))} />
                           </>
                         );
                       }
@@ -474,7 +474,7 @@ export default function StockItems() {
                         return (
                           <>
                             <Label htmlFor="stock">Number of Packs</Label>
-                            <Input id="stock" type="number" step="1" placeholder="e.g., 10" value={addForm.currentStock} onChange={e => setAddForm(f => ({ ...f, currentStock: e.target.value }))} />
+                            <Input id="stock" type="number" step="1" value={addForm.currentStock} onChange={e => setAddForm(f => ({ ...f, currentStock: e.target.value }))} />
                           </>
                         );
                       }
@@ -483,7 +483,7 @@ export default function StockItems() {
                       return (
                         <>
                           <Label htmlFor="stock">Current Stock (Total {displayUnit})</Label>
-                          <Input id="stock" type="number" step="1" placeholder={displayUnit === 'g' || displayUnit === 'ml' ? 'e.g., 500' : 'e.g., 10'} value={addForm.currentStock} onChange={e => setAddForm(f => ({ ...f, currentStock: e.target.value }))} />
+                          <Input id="stock" type="number" step="1" value={addForm.currentStock} onChange={e => setAddForm(f => ({ ...f, currentStock: e.target.value }))} />
                         </>
                       );
                     })()}
@@ -506,7 +506,7 @@ export default function StockItems() {
                         return (
                           <>
                             <Label htmlFor="reorder">Reorder Level (Total {displayUnit})</Label>
-                            <Input id="reorder" type="number" step="0.01" placeholder={`e.g., 20.00`} value={addForm.reorderLevel} onChange={e => setAddForm(f => ({ ...f, reorderLevel: e.target.value }))} />
+                            <Input id="reorder" type="number" step="0.01" value={addForm.reorderLevel} onChange={e => setAddForm(f => ({ ...f, reorderLevel: e.target.value }))} />
                           </>
                         );
                       }
@@ -515,7 +515,7 @@ export default function StockItems() {
                         return (
                           <>
                             <Label htmlFor="reorder">Reorder Level (Packs)</Label>
-                            <Input id="reorder" type="number" step="1" placeholder="e.g., 2" value={addForm.reorderLevel} onChange={e => setAddForm(f => ({ ...f, reorderLevel: e.target.value }))} />
+                            <Input id="reorder" type="number" step="1" value={addForm.reorderLevel} onChange={e => setAddForm(f => ({ ...f, reorderLevel: e.target.value }))} />
                           </>
                         );
                       }
@@ -523,7 +523,7 @@ export default function StockItems() {
                       return (
                         <>
                           <Label htmlFor="reorder">Reorder Level (Total {displayUnit})</Label>
-                          <Input id="reorder" type="number" step={displayUnit === 'g' || displayUnit === 'ml' ? '1' : '1'} placeholder={displayUnit === 'g' || displayUnit === 'ml' ? 'e.g., 250' : 'e.g., 5'} value={addForm.reorderLevel} onChange={e => setAddForm(f => ({ ...f, reorderLevel: e.target.value }))} />
+                          <Input id="reorder" type="number" step={displayUnit === 'g' || displayUnit === 'ml' ? '1' : '1'} value={addForm.reorderLevel} onChange={e => setAddForm(f => ({ ...f, reorderLevel: e.target.value }))} />
                         </>
                       );
                     })()}
@@ -533,7 +533,7 @@ export default function StockItems() {
                 {String(addForm.unitType || '').toUpperCase() === 'PACK' ? (
                   <div className="space-y-2">
                     <Label htmlFor="itemsPerPack">Items per Pack</Label>
-                    <Input id="itemsPerPack" type="number" step="1" placeholder="e.g., 12" value={addForm.itemsPerPack} onChange={e => setAddForm(f => ({ ...f, itemsPerPack: e.target.value }))} />
+                    <Input id="itemsPerPack" type="number" step="1" value={addForm.itemsPerPack} onChange={e => setAddForm(f => ({ ...f, itemsPerPack: e.target.value }))} />
                     <div className="text-sm text-muted-foreground">Calculation Summary:</div>
                     <div className="rounded-md border p-2 bg-background text-sm">System will record: <strong>{addForm.currentStock || 0}</strong> × <strong>{addForm.itemsPerPack || 0}</strong> = <strong>{(parseFloat(addForm.currentStock || '0') * parseFloat(addForm.itemsPerPack || '0')) || 0}</strong> EACH</div>
                   </div>
@@ -650,12 +650,12 @@ export default function StockItems() {
           />
         </div>
         <Select value={selectedDept} onValueChange={setSelectedDept}>
-          <SelectTrigger className="w-full sm:w-[200px]">
+            <SelectTrigger className="w-full sm:w-[200px]">
             <Filter className="h-4 w-4 mr-2" />
-            <SelectValue placeholder="All Departments" />
+            <SelectValue placeholder="All Categories" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Departments</SelectItem>
+            <SelectItem value="all">All Categories</SelectItem>
             {departmentsList.map((dept) => (
               <SelectItem key={dept.id} value={dept.id}>
                 {dept.name}
@@ -852,7 +852,11 @@ export default function StockItems() {
                       onClick={e => {
                         e.stopPropagation();
                         setEditItemId(item.id);
-                        setEditForm({ ...item, itemsPerPack: (item as any).itemsPerPack ?? '' });
+                        setEditForm({
+                          ...item,
+                          itemsPerPack: (item as any).itemsPerPack ?? '',
+                          departmentId: item.departmentId ? String(item.departmentId) : '',
+                        });
                         setIsEditDialogOpen(true);
                       }}
                     >
@@ -904,10 +908,10 @@ export default function StockItems() {
                               </div>
                               <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-2">
-                                  <Label htmlFor="edit-department">Department</Label>
+                                  <Label htmlFor="edit-department">Category</Label>
                                   <Select value={editForm.departmentId} onValueChange={val => setEditForm(f => ({ ...f, departmentId: val }))}>
                                     <SelectTrigger>
-                                      <SelectValue placeholder="Select department" />
+                                        <SelectValue placeholder="Select category" />
                                     </SelectTrigger>
                                     <SelectContent>
                                       {departmentsList.map((dept) => (
@@ -947,6 +951,7 @@ export default function StockItems() {
                                 <div className="space-y-2">
                                   <Label htmlFor="edit-current">Current Cost</Label>
                                   <Input id="edit-current" type="number" step="0.01" value={editForm.currentCost} onChange={e => setEditForm(f => ({ ...f, currentCost: e.target.value }))} />
+                                  <div className="text-sm text-muted-foreground">You can edit unit price and other item fields here; stock qty is managed via GRV.</div>
                                 </div>
                               </div>
                               <div className="grid grid-cols-2 gap-4">
@@ -955,24 +960,27 @@ export default function StockItems() {
                                     const ut = String(editForm.unitType || '').toUpperCase();
                                     if (ut === 'KG' || ut === 'LTRS') {
                                       return (
-                                        <>
-                                          <Label htmlFor="edit-stock">Current Stock (Total {ut === 'KG' ? 'KG' : 'L'})</Label>
-                                          <Input id="edit-stock" type="number" step="0.01" placeholder="e.g., 50.00" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} />
-                                        </>
-                                      );
+                                          <>
+                                            <Label htmlFor="edit-stock">Current Stock (Total {ut === 'KG' ? 'KG' : 'L'})</Label>
+                                            <Input id="edit-stock" type="number" step="0.01" placeholder="e.g., 50.00" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} disabled />
+                                            <div className="text-sm text-muted-foreground">You can't edit qty (stock level) here — use GRV to change stock levels.</div>
+                                          </>
+                                        );
                                     }
                                     if (ut === 'PACK') {
                                       return (
                                         <>
                                           <Label htmlFor="edit-stock">Number of Packs</Label>
-                                          <Input id="edit-stock" type="number" step="1" placeholder="e.g., 10" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} />
+                                          <Input id="edit-stock" type="number" step="1" placeholder="e.g., 10" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} disabled />
+                                          <div className="text-sm text-muted-foreground">You can't edit qty (stock level) here — use GRV to change stock levels.</div>
                                         </>
                                       );
                                     }
                                     return (
-                                      <>
+                                        <>
                                         <Label htmlFor="edit-stock">Current Stock (Units)</Label>
-                                        <Input id="edit-stock" type="number" step="1" placeholder="e.g., 10" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} />
+                                        <Input id="edit-stock" type="number" step="1" placeholder="e.g., 10" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} disabled />
+                                        <div className="text-sm text-muted-foreground">You can't edit qty (stock level) here — use GRV to change stock levels.</div>
                                       </>
                                     );
                                   })()}

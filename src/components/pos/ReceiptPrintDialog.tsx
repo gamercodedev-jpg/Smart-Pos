@@ -61,9 +61,37 @@ export default function ReceiptPrintDialog(props: {
     };
   }, [barcodePayload]);
 
-  const handlePrint = () => {
+  const handlePrint = async () => {
+    if (window.electron?.printSilent) {
+      try {
+        await window.electron.printSilent();
+        return;
+      } catch {
+        // fallback to browser print if silent fails
+      }
+    }
     window.print();
   };
+
+  useEffect(() => {
+    if (!open || !order || settings.autoPrint === false) return;
+    // Delay slightly to ensure the dialog has rendered and CSS applied.
+    const timer = window.setTimeout(async () => {
+      if (window.electron?.printSilent) {
+        try {
+          await window.electron.printSilent();
+          return;
+        } catch {
+          // fallback to browser print
+        }
+      }
+      window.print();
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [open, order, settings.autoPrint]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

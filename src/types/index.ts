@@ -46,17 +46,16 @@ export interface StockItem {
 // Stock Issue (Internal Transfer)
 export interface StockIssue {
   id: string;
-  issueNo: number;
   date: string;
-  originItemId?: string;
-  destinationItemId?: string;
-  originItemCode: string;
-  destinationItemCode: string;
-  wasQty: number;
-  issuedQty: number;
-  nowQty: number;
-  value: number;
-  createdBy: string;
+  issueNo?: number;
+  stockItemId: string;
+  issueType: 'Wastage' | 'Expired' | 'Staff Meal' | 'Theft' | 'Damage';
+  qtyIssued: number; // stored in base unit
+  unitCostAtTime: number;
+  totalValueLost: number;
+  notes?: string | null;
+  createdBy: string | null;
+  createdAt?: string;
 }
 
 // Stock Movement
@@ -372,7 +371,10 @@ export interface ReportFilters extends DateRangeFilter {
 
 // Daily Sales Report
 export interface DailySalesReport {
-  date: string; // ISO date string
+  date: string; // end of range ISO date string
+  startDate?: string;
+  endDate?: string;
+  brandName?: string;
   totals: {
     netSales: number;
     grossSales: number;
@@ -423,6 +425,7 @@ export type SensitiveActionType =
   | 'manager_override'
   | 'order_open'
   | 'order_close'
+  | 'order_started'
   | 'security_alert'
   | 'order_paid'
   | 'order_sent'
@@ -469,6 +472,7 @@ export interface ReceiptSettings {
   countryCode: CountryCode;
   currencyCode: CurrencyCode;
   legalFooter: string;
+  autoPrint?: boolean;
 
   /** For non-Zambia countries, where should the QR take the customer? */
   googleReviewUrl?: string;

@@ -1,6 +1,7 @@
 import type { Expense, ManagementOverview, SalesMixItem, StockTakeSession, StockVariance } from '@/types';
 import type { Order } from '@/types/pos';
 import type { GRV } from '@/types';
+import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient';
 
 export type DashboardStaffRow = {
   id: string;
@@ -164,6 +165,51 @@ export function computeDashboardMetrics(params: {
   const staffRows = computeStaffSales(paidOrders, turnoverIncl);
 
   return { overview, topSellers, lowSeller, staffRows, varianceItems };
+}
+
+// Fetch precomputed aggregates from DB via RPC `get_dashboard_stats` when available.
+export async function fetchDashboardStatsFromDb(brandId: string, startDate: string, endDate: string) {
+  if (!isSupabaseConfigured() || !supabase) return null;
+  if (!brandId) return null;
+  try {
+    const { data, error } = await supabase.rpc('get_dashboard_stats', { p_brand_id: brandId, p_start_date: startDate, p_end_date: endDate });
+    if (error) {
+      console.warn('[dashboardMetrics] rpc get_dashboard_stats error', error);
+      return null;
+    }
+    // Map the RPC result to the UI keys expected by Dashboard
+    const raw = Array.isArray(data) && data.length ? data[0] : data;
+    if (!raw) return null;
+    return {
+      ...raw,
+      cashierShiftCount: Number(raw.cashier_shift_count ?? 0),
+      cashierShiftClosedCount: Number(raw.cashier_shift_closed_count ?? 0),
+      cashierShiftOpeningTotal: Number(raw.cashier_shift_opening_total ?? 0),
+      cashierShiftClosingTotal: Number(raw.cashier_shift_closing_total ?? 0),
+      cashierShiftVarianceTotal: Number(raw.cashier_shift_variance_total ?? 0),
+      cashierShiftsByStaff: Array.isArray(raw.cashier_shifts_by_staff) ? raw.cashier_shifts_by_staff : [],
+      staffRows: Array.isArray(raw.staff_performance)
+        ? raw.staff_performance.map((row: any) => ({
+            name: row.name,
+            totalSales: Number(row.totalSales) || 0,
+          }))
+        : [],
+      topSellers: Array.isArray(raw.top_selling)
+        ? raw.top_selling.map((item: any) => ({
+            itemName: item.name,
+            quantity: item.qty,
+            totalSales: item.sales,
+            gpAfterDiscount: 0,
+          }))
+        : [],
+      paymentBreakdown: typeof raw.payment_breakdown === 'object' && raw.payment_breakdown !== null ? raw.payment_breakdown : {},
+      hoursPerDay: Array.isArray(raw.hours_per_day) ? raw.hours_per_day : [],
+      invoiceCount: typeof raw.invoices_count === 'number' ? raw.invoices_count : 0,
+    };
+  } catch (e) {
+    console.warn('[dashboardMetrics] fetchDashboardStatsFromDb exception', e);
+    return null;
+  }
 }
 
 function dateKeyFromIso(value: unknown) {
