@@ -29,15 +29,19 @@ jobs:
           npm run build --if-present
           npm run test --if-present
 
+      - name: Prepare deployment package
+        run: |
+          mkdir -p deploy-package
+          cp -r dist deploy-package/dist
+          cp server.js package.json package-lock.json deploy-package/
+          cd deploy-package
+          npm ci --omit=dev
+
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
         with:
           name: node-app
-          path: |
-            dist
-            server.js
-            package.json
-            package-lock.json
+          path: deploy-package
 
   deploy:
     runs-on: ubuntu-latest
@@ -51,12 +55,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: node-app
-          path: ./deploy-package
+          path: .
 
       - name: Verify deployment package
         run: |
           ls -la ./deploy-package
           test -f ./deploy-package/server.js
+          test -f ./deploy-package/node_modules/express/package.json
       
       - name: Login to Azure
         uses: azure/login@v2
