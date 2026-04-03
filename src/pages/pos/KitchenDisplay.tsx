@@ -99,7 +99,7 @@ export default function KitchenDisplay() {
       osc.frequency.setValueAtTime(base, start);
 
       gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(0.12, start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(4.30, start + 0.01);
       gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.14);
 
       osc.connect(gain);

@@ -486,7 +486,7 @@ export default function POSTerminal() {
       // Envelope: quick attack, medium decay
       gain.gain.cancelScheduledValues(now);
       gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(0.08, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(4.20, now + 0.02);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
 
       osc1.start(now);
@@ -928,8 +928,9 @@ export default function POSTerminal() {
 
       // debug: removed on-screen merged items
 
-      // Clear local items after sending to prevent accidental re-send
-      setOrderItems([]);
+      // Keep the sent ticket on screen so cashier can proceed to payment.
+      // The "Send to Kitchen" button remains disabled once all lines are sent.
+      loadOrderToTerminal(saved);
 
       // Note: we intentionally do NOT call `sendOrderPayload` here because
       // `upsertOrder` already triggers remote sync (via `sendOrderToSupabase`).
