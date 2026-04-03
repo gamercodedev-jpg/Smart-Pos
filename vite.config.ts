@@ -18,6 +18,8 @@ export default defineConfig(({ mode }) => ({
     react(),
     mode === "development" && componentTagger(),
     VitePWA({
+      // Avoid automatic forced reloads from SW updates; registration is handled explicitly where needed.
+      injectRegister: false,
       registerType: "autoUpdate",
       manifest: {
         name: "Mthunzi",

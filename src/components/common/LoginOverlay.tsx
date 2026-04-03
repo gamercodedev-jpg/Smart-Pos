@@ -247,11 +247,11 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
             )}
               {isSignup && (
                 <div>
-                  <label className="block text-sm font-medium mb-1">Full name</label>
+                  <label className="block text-sm font-medium mb-1 text-orange-200">Full name</label>
                   <input
                     type="text"
                     required
-                    className="w-full border rounded px-3 py-2"
+                    className="w-full border border-orange-500/40 bg-[#111] text-white placeholder:text-orange-200/50 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500"
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
                   />
