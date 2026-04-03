@@ -7,6 +7,7 @@ import { BrandingProvider } from "./contexts/BrandingContext";
 import { CurrencyProvider } from "./contexts/CurrencyContext";
 import { MainLayout } from "./components/layout/MainLayout";
 import { RoleGateway } from "./components/common/RoleGateway";
+import { BrandActivationGuard } from "./components/common/BrandActivationGuard";
 import { useAuth } from '@/contexts/AuthContext';
 import { ProtectedRoute } from './components/common/ProtectedRoute';
 import React, { Suspense } from "react";
@@ -126,6 +127,7 @@ const App = () => {
             <AppErrorBoundary>
               <InstallPrompt />
               <BrandPromptModal />
+              <BrandActivationGuard />
               <Suspense fallback={<AppShellLoader />}>
                 <Routes>
                   <Route path="/" element={<Landing />} />

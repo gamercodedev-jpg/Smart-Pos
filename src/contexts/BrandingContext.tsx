@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { CompanySettings } from '@/types/company';
-import { defaultCompanySettings, getCompanySettings, saveCompanySettings } from '@/lib/companySettingsStore';
+import { clearLegacyCompanySettings, defaultCompanySettings, getCompanySettings, saveCompanySettings } from '@/lib/companySettingsStore';
 import { hexToHslVar } from '@/lib/color';
 import { useAuth } from '@/contexts/AuthContext';
 import {
@@ -42,14 +42,15 @@ const applyBrandingToDocument = (settings: CompanySettings) => {
 };
 
 export function BrandingProvider({ children }: { children: React.ReactNode }) {
-  const { brand } = useAuth();
-  const brandId = (brand as any)?.id ?? null;
+  const { brand, user } = useAuth();
+  const brandId = (brand as any)?.id ?? (user as any)?.brand_id ?? null;
 
   const [settings, setSettings] = useState<CompanySettings>(() => getCompanySettings(brandId));
   const [brandExists, setBrandExists] = useState<boolean>(false);
 
   // Load cached settings whenever the active brand changes.
   useEffect(() => {
+    clearLegacyCompanySettings();
     setSettings(getCompanySettings(brandId));
 
     // Quick best-effort sync from the brand row (prevents placeholder flashes).
@@ -107,7 +108,7 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     applyBrandingToDocument(settings);
-    saveCompanySettings(settings, brandId);
+    if (brandId) saveCompanySettings(settings, brandId);
   }, [settings, brandId]);
 
   const saveToServer = async (next: Partial<CompanySettings>, logoFile?: File | null, createdBy?: string | null) => {

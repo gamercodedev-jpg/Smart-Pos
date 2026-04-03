@@ -88,6 +88,11 @@ function normalizeRole(role: unknown): UserRole {
   return 'owner';
 }
 
+function resolveBrandIsActive(brandRow: any | null | undefined): boolean {
+  if (!brandRow) return true;
+  return brandRow.is_active === true;
+}
+
 function mapUnderBrandStaffRow(row: any): BrandStaffUser {
   return {
     id: String(row.id),
@@ -105,6 +110,7 @@ interface AuthContextType {
   user: BrandStaffUser | null;
   accountUser: AccountUser | null;
   brand: any | null;
+  brandIsActive: boolean; // Whether the current brand is activated
   operatorPin: string | null;
   loading: boolean;
   profileReady: boolean;
@@ -132,6 +138,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
   const [user, setUser] = useState<BrandStaffUser | null>(null);
   const [brand, setBrand] = useState<any | null>(null);
+  const [brandIsActive, setBrandIsActive] = useState<boolean>(true); // Track brand activation status
   const [allUsers, setAllUsers] = useState<BrandStaffUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [profileReady, setProfileReady] = useState(false);
@@ -270,8 +277,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             );
             nextBrand = brandRow ?? null;
           } catch {
-            // Keep minimal brand object so the app can still resolve settings by brand id.
-            nextBrand = { id: (staff as any).brand_id } as any;
+            // Network/RLS fallback: reuse cached brand payload (if any) so
+            // activation state does not get lost to a partial object.
+            const snap = loadAuthSnapshot(userId);
+            const cachedBrand = (snap?.brand as any) ?? null;
+            nextBrand = cachedBrand && cachedBrand.id === (staff as any).brand_id ? cachedBrand : null;
           }
         }
 
@@ -313,6 +323,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           createdAt: undefined,
         });
         setBrand(nextBrand);
+        setBrandIsActive(resolveBrandIsActive(nextBrand));
         setActiveUserId(userId);
         saveAuthSnapshot({
           v: 1,
@@ -324,6 +335,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 id: nextBrand.id ?? null,
                 name: nextBrand.name ?? null,
                 primary_color_hex: (nextBrand as any).primary_color_hex ?? null,
+                is_active: resolveBrandIsActive(nextBrand),
               }
             : null,
         });
@@ -386,6 +398,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setAccountUser(null);
           setUser(restored.staff);
           setBrand(restored.brand);
+          setBrandIsActive(resolveBrandIsActive(restored.brand));
           setOperatorPin(null);
           setLoading(false);
           setProfileReady(true);
@@ -396,6 +409,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(null);
         setAccountUser(null);
         setBrand(null);
+        setBrandIsActive(true);
         setOperatorPin(null);
         setLoading(false);
         setProfileReady(true);
@@ -412,7 +426,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Snapshot stores the account user; operator will be restored from local operator key.
         const acct = snap.user as any;
         setAccountUser(acct);
-        setBrand((snap.brand ?? (acct?.brand_id ? ({ id: acct.brand_id } as any) : null)) as any);
+        const brandData = snap.brand ?? (acct?.brand_id ? ({ id: acct.brand_id } as any) : null);
+        setBrand(brandData as any);
+        setBrandIsActive(resolveBrandIsActive(brandData));
         setOperatorPin(null);
         // IMPORTANT: also hydrate the active operator immediately so the app doesn't
         // briefly render the public Landing screen before the background refresh completes.
@@ -448,7 +464,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (snap?.user) {
           const acct = snap.user as any;
           setAccountUser(acct);
-          setBrand((snap.brand ?? (acct?.brand_id ? ({ id: acct.brand_id } as any) : null)) as any);
+          const brandData = snap.brand ?? (acct?.brand_id ? ({ id: acct.brand_id } as any) : null);
+          setBrand(brandData as any);
+          setBrandIsActive(resolveBrandIsActive(brandData));
           setUser({
             id: String(acct.id ?? userId),
             name: String(acct.name ?? 'User'),
@@ -471,6 +489,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(null);
         setAccountUser(null);
         setBrand(null);
+        setBrandIsActive(true);
         setOperatorPin(null);
         setLoading(false);
         setProfileReady(true);
@@ -721,6 +740,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setAccountUser(null);
       setUser(staffUser);
       setBrand(brandRow);
+      setBrandIsActive(resolveBrandIsActive(brandRow));
       setOperatorPin(cleanPin);
       setLoading(false);
       setProfileReady(true);
@@ -766,6 +786,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     setAccountUser(null);
     setBrand(null);
+    setBrandIsActive(true);
     setAllUsers([]);
     setOperatorPin(null);
     clearStaffSession();
@@ -877,7 +898,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     <AuthContext.Provider value={{ 
       user, 
       accountUser,
-      brand, 
+      brand,
+      brandIsActive,
       operatorPin,
       loading, 
       profileReady,

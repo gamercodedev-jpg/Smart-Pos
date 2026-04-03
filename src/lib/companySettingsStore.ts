@@ -12,12 +12,13 @@ export const defaultCompanySettings: CompanySettings = {
 };
 
 function getKey(brandId?: string | null) {
-  return brandId ? `${STORAGE_KEY_PREFIX}${brandId}` : LEGACY_STORAGE_KEY;
+  return brandId ? `${STORAGE_KEY_PREFIX}${brandId}` : null;
 }
 
 export const getCompanySettings = (brandId?: string | null): CompanySettings => {
   try {
     const key = getKey(brandId);
+    if (!key) return defaultCompanySettings;
     const raw = localStorage.getItem(key);
 
     if (!raw) return defaultCompanySettings;
@@ -33,5 +34,15 @@ export const getCompanySettings = (brandId?: string | null): CompanySettings => 
 };
 
 export const saveCompanySettings = (settings: CompanySettings, brandId?: string | null) => {
-  localStorage.setItem(getKey(brandId), JSON.stringify(settings));
+  const key = getKey(brandId);
+  if (!key) return;
+  localStorage.setItem(key, JSON.stringify(settings));
+};
+
+export const clearLegacyCompanySettings = () => {
+  try {
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
 };

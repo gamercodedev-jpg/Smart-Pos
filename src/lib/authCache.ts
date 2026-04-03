@@ -14,6 +14,7 @@ export type AuthCacheSnapshot = {
     id?: string | null;
     name?: string | null;
     primary_color_hex?: string | null;
+    is_active?: boolean;
   } | null;
 };
 
