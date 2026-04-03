@@ -34,6 +34,7 @@ import {
   SidebarFooter,
   useSidebar,
 } from '@/components/ui/sidebar';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import { useBranding } from '@/contexts/BrandingContext';
@@ -88,6 +89,21 @@ const toolsItems = [
   { title: 'Receipts', url: '/app/receipt-demo', icon: Receipt, permission: 'viewReports' as const },
 ];
 
+const disabledFeatureRoutes = new Set([
+  '/app/pos/table-qr',
+  '/app/pos/tables',
+  '/app/inventory/advanced-gaap',
+  '/app/inventory/transfer-qr',
+  '/app/tax-demo',
+  '/app/security-demo',
+  '/app/variance-demo',
+  '/app/zra-invoice-demo',
+  '/app/report-share-demo',
+  '/app/receipt-demo',
+]);
+
+const disabledFeatureMessage = 'Feature coming soon';
+
 export function AppSidebar() {
   const location = useLocation();
   const { state } = useSidebar();
@@ -115,32 +131,51 @@ export function AppSidebar() {
 
   const NavItem = ({ item }: { item: NavItemType }) => {
     if (!hasPermission(item.permission)) return null;
-    const disabled = !hasBrand;
-    
-    return (
-      <SidebarMenuItem>
-        <SidebarMenuButton asChild isActive={isActive(item.url)}>
-          <NavLink
-            to={disabled ? '#' : item.url}
-            onClick={(e) => {
-              if (disabled) {
-                e.preventDefault();
+    const brandLocked = !hasBrand;
+    const featureDisabled = disabledFeatureRoutes.has(item.url);
+    const disabled = brandLocked || featureDisabled;
+
+    const link = (
+      <SidebarMenuButton asChild isActive={isActive(item.url) && !disabled}>
+        <NavLink
+          to={disabled ? '#' : item.url}
+          aria-disabled={disabled}
+          tabIndex={disabled ? -1 : undefined}
+          onClick={(e) => {
+            if (disabled) {
+              e.preventDefault();
+              if (brandLocked) {
                 setRequestedNav(item.url);
                 setShowCreateBrandDialog(true);
               }
-            }}
-            className={cn(
-              "flex items-center gap-3 px-3 py-2 rounded-md transition-colors",
-              isActive(item.url)
-                ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
-                : "text-sidebar-foreground hover:bg-sidebar-accent/50",
-              disabled && 'opacity-60'
-            )}
-          >
-            <item.icon className="h-4 w-4 shrink-0" />
-            {!collapsed && <span>{item.title}</span>}
-          </NavLink>
-        </SidebarMenuButton>
+            }
+          }}
+          className={cn(
+            "flex items-center gap-3 px-3 py-2 rounded-md transition-colors",
+            isActive(item.url) && !disabled
+              ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+              : "text-sidebar-foreground hover:bg-sidebar-accent/50",
+            disabled && 'cursor-not-allowed opacity-50'
+          )}
+        >
+          <item.icon className="h-4 w-4 shrink-0" />
+          {!collapsed && <span>{item.title}</span>}
+        </NavLink>
+      </SidebarMenuButton>
+    );
+    
+    return (
+      <SidebarMenuItem>
+        {featureDisabled ? (
+          <Tooltip>
+            <TooltipTrigger asChild>{link}</TooltipTrigger>
+            <TooltipContent side="right" align="center">
+              {disabledFeatureMessage}
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          link
+        )}
       </SidebarMenuItem>
     );
   };
